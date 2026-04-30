@@ -65,10 +65,10 @@ def main() -> int:
         if task == "lint" or rc:
             return rc
 
-    if task in ("default"):
+    if task in ("default", "test"):
         return run(["uv", "run", "python", "-m", "pytest"])
 
-    if task in ("default", "coverage"):
+    if task in ("coverage"):
         rc = run(["uv", "run", "python", "-m", "pytest", "--cov-report=html"])
         if rc:
             return rc
@@ -83,32 +83,8 @@ def main() -> int:
         rc = run(["uv", "run", "zensical", "build"])
         if rc:
             return rc
-        return run(
-            [
-                "uv",
-                "run",
-                "python",
-                "-m",
-                "pytest",
-                "--cov-report=html:site/coverage",
-                "--no-cov-on-fail",
-            ]
-        )
 
     if task == "docs-serve":
-        rc = run(
-            [
-                "uv",
-                "run",
-                "python",
-                "-m",
-                "pytest",
-                "--cov-report=html:docs/coverage",
-                "--no-cov-on-fail",
-            ]
-        )
-        if rc:
-            return rc
         return run(["uv", "run", "zensical", "serve"])
 
     if task == "clean":

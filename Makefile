@@ -6,7 +6,7 @@
 
 .PHONY: default install lint test coverage upgrade build docs docs-serve clean
 
-default: install lint coverage
+default: install lint test
 
 install:
 	uv sync --all-extras
@@ -27,10 +27,10 @@ build:
 	uv build
 
 docs:
-	uv run zensical build && uv run python -m pytest --cov-report=html:site/coverage --no-cov-on-fail
+	uv run zensical build
 
 docs-serve:
-	uv run python -m pytest --cov-report=html:docs/coverage --no-cov-on-fail && uv run zensical serve
+	uv run zensical serve
 
 clean:
 	-rm -rf dist/
