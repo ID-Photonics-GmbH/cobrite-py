@@ -30,7 +30,7 @@ No API token needed — the publish workflow uses OIDC.
 2. Fill in:
    - **PyPI project name**: `CoBrite` (must match `name` in `pyproject.toml`)
    - **Owner**: `ID-Photonics-GmbH`
-   - **Repository**: `cobrite`
+   - **Repository**: `cobrite-py`
    - **Workflow filename**: `publish.yml`
    - **Environment name**: *(leave blank)*
 3. Save. PyPI will accept pushes from this workflow without a token.
@@ -144,7 +144,6 @@ Publishing the release triggers `.github/workflows/publish.yml`, which:
 
 ## Checklist for first publish
 
-- [ ] Move code to new public repo `cobrite`. Drop history.
 - [ ] Setup github pages -> cobrite.id-photonics.com
 - [ ] Remove `"Private :: Do Not Upload"` from `pyproject.toml`
 - [ ] Set correct development status classifier
@@ -153,4 +152,4 @@ Publishing the release triggers `.github/workflows/publish.yml`, which:
 - [ ] `docs.yml` workflow added and pushed
 - [ ] CI green on `main`
 - [ ] Tag pushed and GitHub release published
-- [ ] rewrite publish.md
+- [ ] delete publish.md
