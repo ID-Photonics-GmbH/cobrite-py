@@ -5,7 +5,8 @@ Python driver for [ID Photonics](https://id-photonics.com) [CoBrite](https://id-
 ## Installation
 
 ```bash
-uv add git+ssh://git@github.com/ID-Photonics-GmbH/cobrite.git
+pip install cobrite
+uv add cobrite
 ```
 
 ## Quick start
