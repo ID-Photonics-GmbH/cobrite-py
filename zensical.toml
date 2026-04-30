@@ -1,0 +1,66 @@
+[project]
+nav = [
+    {CoBrite = "index.md"},
+    {API = "api.md"},
+    {Development = "development.md"},
+    # {"Publishing Guide" = "publish.md"},
+    {"Coverage Report" = "coverage/index.html"},
+]
+site_name = "CoBrite"
+site_description = "Python driver for ID Photonics CoBrite tunable laser controllers"
+site_url = "https://id-photonics.github.io/cobrite/"
+repo_url = "https://github.com/ID-Photonics-GmbH/cobrite"
+repo_name = "cobrite"
+docs_dir = "docs"
+site_dir = "site"
+extra_css = ["stylesheets/extra.css"]
+
+[project.plugins.mkdocstrings.handlers.python]
+inventories = ["https://docs.python.org/3/objects.inv"]
+paths = ["src"]
+
+[project.plugins.mkdocstrings.handlers.python.options]
+docstring_style = "google"
+inherited_members = true
+show_source = false
+
+[project.theme]
+logo = "images/logo.png"
+favicon = "images/favicon.png"
+features = [
+    "navigation.instant",
+    "navigation.instant.prefetch",
+    "navigation.instant.progress",
+    "navigation.tracking",
+    # "navigation.tabs",
+    # "navigation.tabs.sticky",
+    "navigation.sections",
+    # "navigation.expand",
+    # "navigation.path",
+    "toc.follow",
+    # "toc.integrate"
+]
+
+[project.theme.icon]
+repo = "octicons/git-branch-16"
+
+# Palette toggle for automatic mode
+[[project.theme.palette]]
+media = "(prefers-color-scheme)"
+toggle.icon = "lucide/sun-moon"
+toggle.name = "Switch to light mode"
+
+# Palette toggle for light mode
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+# Palette toggle for dark mode
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to system preference"
+
