@@ -6,7 +6,7 @@ All tasks run via `make` or `uv run python devtools/dev.py [task]` (cross-platfo
 
 | Task | What it does |
 |------|-------------|
-| *(default)* | `install` then `lint` |
+| *(default)* | `install`, `lint`, `test`|
 | `install` | `uv sync --all-extras` — create/sync `.venv` with all optional deps |
 | `lint` | `codespell` → `ruff check --fix` → `ruff format` → `basedpyright` |
 | `test` | Run pytest with coverage |

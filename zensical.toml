@@ -3,12 +3,11 @@ nav = [
     {CoBrite = "index.md"},
     {API = "api.md"},
     {Development = "development.md"},
-    # {"Publishing Guide" = "publish.md"},
-    {"Coverage Report" = "coverage/index.html"},
+    # {"Coverage Report" = "coverage/index.html"},
 ]
 site_name = "CoBrite"
 site_description = "Python driver for ID Photonics CoBrite tunable laser controllers"
-site_url = "https://id-photonics.com/download/cobrite-manual/"
+site_url = "https://id-photonics-gmbh.github.io/cobrite-py/"
 repo_url = "https://github.com/ID-Photonics-GmbH/cobrite-py"
 repo_name = "cobrite-py"
 docs_dir = "docs"
