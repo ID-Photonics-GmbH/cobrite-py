@@ -3,7 +3,6 @@ nav = [
     {CoBrite = "index.md"},
     {API = "api.md"},
     {Development = "development.md"},
-    # {"Coverage Report" = "coverage/index.html"},
 ]
 site_name = "CoBrite"
 site_description = "Python driver for ID Photonics CoBrite tunable laser controllers"
