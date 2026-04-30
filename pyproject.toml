@@ -23,8 +23,8 @@ dynamic = ["version"]
 # https://pypi.org/classifiers/
 classifiers = [
     # "Development Status :: 3 - Alpha",
-    "Development Status :: 4 - Beta",
-    # "Development Status :: 5 - Production/Stable",
+    # "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Physics",
@@ -38,7 +38,7 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Typing :: Typed",
     # Include this to avoid accidentally publishing to PyPI:
-    "Private :: Do Not Upload",
+    # "Private :: Do Not Upload",
 ]
 
 dependencies = [
