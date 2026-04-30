@@ -275,6 +275,18 @@ def test_idn() -> None:
     cb.close(disable=False)
 
 
+def test_info() -> None:
+    cb = make_cb({**OPEN_1x1x1, "INFO?": "ID Photonics,CoBrite-DX,SN001,1.0"})
+    assert "CoBrite" in cb.info()
+    cb.close(disable=False)
+
+
+def test_opc_wait() -> None:
+    cb = make_cb({**OPEN_1x1x1, "*WAI": "OK"})
+    cb.opc_wait()
+    cb.close(disable=False)
+
+
 def test_get_alarm() -> None:
     cb = make_cb({**OPEN_1x1x1, "ALAR?": "0"})
     assert cb.get_alarm() == 0
@@ -771,6 +783,20 @@ def test_set_ip_address() -> None:
     cb.close(disable=False)
 
 
+def test_set_ip_address_1() -> None:
+    cb = make_cb({**OPEN_1x1x1, "IPADDR1 10.0.0.1": "OK"})
+    cb._user_level = 1
+    cb.set_ip_address_1("10.0.0.1")
+    cb.close(disable=False)
+
+
+def test_set_ip_address_2() -> None:
+    cb = make_cb({**OPEN_1x1x1, "IPADDR2 10.0.1.1": "OK"})
+    cb._user_level = 1
+    cb.set_ip_address_2("10.0.1.1")
+    cb.close(disable=False)
+
+
 def test_default_settings() -> None:
     cb = make_cb({**OPEN_1x1x1, "DEFAULT": "OK"})
     cb._user_level = 1
@@ -893,15 +919,51 @@ def test_get_ip_address() -> None:
     cb.close(disable=False)
 
 
+def test_get_ip_address_1() -> None:
+    cb = make_cb({**OPEN_1x1x1, "IPADDR1?": "192.168.1.11"})
+    assert cb.get_ip_address_1() == "192.168.1.11"
+    cb.close(disable=False)
+
+
+def test_get_ip_address_2() -> None:
+    cb = make_cb({**OPEN_1x1x1, "IPADDR2?": "192.168.2.10"})
+    assert cb.get_ip_address_2() == "192.168.2.10"
+    cb.close(disable=False)
+
+
 def test_get_netmask() -> None:
     cb = make_cb({**OPEN_1x1x1, "NETMASK?": "255.255.255.0"})
     assert cb.get_netmask() == "255.255.255.0"
     cb.close(disable=False)
 
 
+def test_get_netmask_1() -> None:
+    cb = make_cb({**OPEN_1x1x1, "NETMASK1?": "255.255.255.0"})
+    assert cb.get_netmask_1() == "255.255.255.0"
+    cb.close(disable=False)
+
+
+def test_get_netmask_2() -> None:
+    cb = make_cb({**OPEN_1x1x1, "NETMASK2?": "255.255.0.0"})
+    assert cb.get_netmask_2() == "255.255.0.0"
+    cb.close(disable=False)
+
+
 def test_get_gateway_ip() -> None:
     cb = make_cb({**OPEN_1x1x1, "GATEWAYIP?": "192.168.1.1"})
     assert cb.get_gateway_ip() == "192.168.1.1"
+    cb.close(disable=False)
+
+
+def test_get_gateway_ip_1() -> None:
+    cb = make_cb({**OPEN_1x1x1, "GATEWAYIP1?": "192.168.1.1"})
+    assert cb.get_gateway_ip_1() == "192.168.1.1"
+    cb.close(disable=False)
+
+
+def test_get_gateway_ip_2() -> None:
+    cb = make_cb({**OPEN_1x1x1, "GATEWAYIP2?": "192.168.2.1"})
+    assert cb.get_gateway_ip_2() == "192.168.2.1"
     cb.close(disable=False)
 
 
@@ -917,9 +979,39 @@ def test_get_mac_address() -> None:
     cb.close(disable=False)
 
 
+def test_get_mac_address_1() -> None:
+    cb = make_cb({**OPEN_1x1x1, "MACADDRESS1?": "AA:BB:CC:DD:EE:01"})
+    assert cb.get_mac_address_1() == "AA:BB:CC:DD:EE:01"
+    cb.close(disable=False)
+
+
+def test_get_mac_address_2() -> None:
+    cb = make_cb({**OPEN_1x1x1, "MACADDRESS2?": "AA:BB:CC:DD:EE:02"})
+    assert cb.get_mac_address_2() == "AA:BB:CC:DD:EE:02"
+    cb.close(disable=False)
+
+
+def test_get_usb_ip_address() -> None:
+    cb = make_cb({**OPEN_1x1x1, "USBIPADDR?": "169.254.0.1"})
+    assert cb.get_usb_ip_address() == "169.254.0.1"
+    cb.close(disable=False)
+
+
+def test_get_usb_netmask() -> None:
+    cb = make_cb({**OPEN_1x1x1, "USBNETMASK?": "255.255.0.0"})
+    assert cb.get_usb_netmask() == "255.255.0.0"
+    cb.close(disable=False)
+
+
 def test_get_ip_config_changed() -> None:
     cb = make_cb({**OPEN_1x1x1, "IPCCH?": "1"})
     assert cb.get_ip_config_changed() is True
+    cb.close(disable=False)
+
+
+def test_get_dhcp() -> None:
+    cb = make_cb({**OPEN_1x1x1, "DHCP?": "on"})
+    assert cb.get_dhcp() == "on"
     cb.close(disable=False)
 
 
@@ -1005,10 +1097,38 @@ def test_set_netmask() -> None:
     cb.close(disable=False)
 
 
+def test_set_netmask_1() -> None:
+    cb = make_cb({**OPEN_1x1x1, "NETMASK1 255.255.255.0": "OK"})
+    cb._user_level = 1
+    cb.set_netmask_1("255.255.255.0")
+    cb.close(disable=False)
+
+
+def test_set_netmask_2() -> None:
+    cb = make_cb({**OPEN_1x1x1, "NETMASK2 255.255.0.0": "OK"})
+    cb._user_level = 1
+    cb.set_netmask_2("255.255.0.0")
+    cb.close(disable=False)
+
+
 def test_set_gateway_ip() -> None:
     cb = make_cb({**OPEN_1x1x1, "GATEWAYIP 192.168.1.1": "OK"})
     cb._user_level = 1
     cb.set_gateway_ip("192.168.1.1")
+    cb.close(disable=False)
+
+
+def test_set_gateway_ip_1() -> None:
+    cb = make_cb({**OPEN_1x1x1, "GATEWAYIP1 192.168.1.1": "OK"})
+    cb._user_level = 1
+    cb.set_gateway_ip_1("192.168.1.1")
+    cb.close(disable=False)
+
+
+def test_set_gateway_ip_2() -> None:
+    cb = make_cb({**OPEN_1x1x1, "GATEWAYIP2 192.168.2.1": "OK"})
+    cb._user_level = 1
+    cb.set_gateway_ip_2("192.168.2.1")
     cb.close(disable=False)
 
 

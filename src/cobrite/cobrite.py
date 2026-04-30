@@ -775,6 +775,17 @@ class CoBrite:
         """
         return self.query("*IDN?")
 
+    def info(self) -> str:
+        """Return the system information string (`INFO?`).
+
+        Returns the same identification and version information as `idn()` but
+        via the system-level `INFO?` command.
+
+        Returns:
+            System type and software version string.
+        """
+        return self.query("INFO?")
+
     def abort(self) -> None:
         """Abort the current operation (`ABOR`)."""
         self.write("ABOR")
@@ -786,6 +797,14 @@ class CoBrite:
             `True` if the device is idle.
         """
         return self._query_typed("*OPC?", lambda x: bool(int(x)))
+
+    def opc_wait(self) -> None:
+        """Block until all pending operations complete (`*WAI`).
+
+        The device holds the TCP connection open until `*OPC?` would return
+        `1`, eliminating the need for a client-side polling loop.
+        """
+        self.write("*WAI")
 
     def get_alarm(self) -> int:
         """Return the system alarm register (`ALAR?`).
@@ -821,28 +840,97 @@ class CoBrite:
         return self._query_typed("REMO?", lambda x: bool(int(x)))
 
     def get_ip_address(self) -> str:
-        """Return the Ethernet IP address (`IPADDR?`).
+        """Return the Ethernet IP address (`IPADDR?`). DX and DX2 only.
+
+        For MX: [`get_ip_address_1`][cobrite.CoBrite.get_ip_address_1] /
+        [`get_ip_address_2`][cobrite.CoBrite.get_ip_address_2].
 
         Returns:
             Dotted-decimal IP address string.
         """
         return self.query("IPADDR?")
 
+    def get_ip_address_1(self) -> str:
+        """Return the front-panel Ethernet IP address (`IPADDR1?`). MX only.
+
+        For DX/DX2: [`get_ip_address`][cobrite.CoBrite.get_ip_address].
+
+        Returns:
+            Dotted-decimal IP address string.
+        """
+        return self.query("IPADDR1?")
+
+    def get_ip_address_2(self) -> str:
+        """Return the rear-panel Ethernet IP address (`IPADDR2?`). MX only.
+
+        For DX/DX2: [`get_ip_address`][cobrite.CoBrite.get_ip_address].
+
+        Returns:
+            Dotted-decimal IP address string.
+        """
+        return self.query("IPADDR2?")
+
     def get_netmask(self) -> str:
-        """Return the Ethernet netmask (`NETMASK?`).
+        """Return the Ethernet netmask (`NETMASK?`). DX and DX2 only.
+
+        For MX: [`get_netmask_1`][cobrite.CoBrite.get_netmask_1] /
+        [`get_netmask_2`][cobrite.CoBrite.get_netmask_2].
 
         Returns:
             Dotted-decimal netmask string.
         """
         return self.query("NETMASK?")
 
+    def get_netmask_1(self) -> str:
+        """Return the front-panel Ethernet netmask (`NETMASK1?`). MX only.
+
+        For DX/DX2: [`get_netmask`][cobrite.CoBrite.get_netmask].
+
+        Returns:
+            Dotted-decimal netmask string.
+        """
+        return self.query("NETMASK1?")
+
+    def get_netmask_2(self) -> str:
+        """Return the rear-panel Ethernet netmask (`NETMASK2?`). MX only.
+
+        For DX/DX2: [`get_netmask`][cobrite.CoBrite.get_netmask].
+
+        Returns:
+            Dotted-decimal netmask string.
+        """
+        return self.query("NETMASK2?")
+
     def get_gateway_ip(self) -> str:
-        """Return the gateway IP address (`GATEWAYIP?`).
+        """Return the gateway IP address (`GATEWAYIP?`). DX and DX2 only.
+
+        For MX: [`get_gateway_ip_1`][cobrite.CoBrite.get_gateway_ip_1] /
+        [`get_gateway_ip_2`][cobrite.CoBrite.get_gateway_ip_2].
 
         Returns:
             Dotted-decimal gateway IP string.
         """
         return self.query("GATEWAYIP?")
+
+    def get_gateway_ip_1(self) -> str:
+        """Return the front-panel gateway IP address (`GATEWAYIP1?`). MX only.
+
+        For DX/DX2: [`get_gateway_ip`][cobrite.CoBrite.get_gateway_ip].
+
+        Returns:
+            Dotted-decimal gateway IP string.
+        """
+        return self.query("GATEWAYIP1?")
+
+    def get_gateway_ip_2(self) -> str:
+        """Return the rear-panel gateway IP address (`GATEWAYIP2?`). MX only.
+
+        For DX/DX2: [`get_gateway_ip`][cobrite.CoBrite.get_gateway_ip].
+
+        Returns:
+            Dotted-decimal gateway IP string.
+        """
+        return self.query("GATEWAYIP2?")
 
     def get_dns_ip(self) -> str:
         """Return the primary DNS server IP address (`DNSIP?`).
@@ -853,12 +941,51 @@ class CoBrite:
         return self.query("DNSIP?")
 
     def get_mac_address(self) -> str:
-        """Return the Ethernet MAC address (`MACADDRESS?`).
+        """Return the Ethernet MAC address (`MACADDRESS?`). DX and DX2 only.
+
+        For MX: [`get_mac_address_1`][cobrite.CoBrite.get_mac_address_1] /
+        [`get_mac_address_2`][cobrite.CoBrite.get_mac_address_2].
 
         Returns:
             MAC address string.
         """
         return self.query("MACADDRESS?")
+
+    def get_mac_address_1(self) -> str:
+        """Return the front-panel Ethernet MAC address (`MACADDRESS1?`). MX only.
+
+        For DX/DX2: [`get_mac_address`][cobrite.CoBrite.get_mac_address].
+
+        Returns:
+            MAC address string.
+        """
+        return self.query("MACADDRESS1?")
+
+    def get_mac_address_2(self) -> str:
+        """Return the rear-panel Ethernet MAC address (`MACADDRESS2?`). MX only.
+
+        For DX/DX2: [`get_mac_address`][cobrite.CoBrite.get_mac_address].
+
+        Returns:
+            MAC address string.
+        """
+        return self.query("MACADDRESS2?")
+
+    def get_usb_ip_address(self) -> str:
+        """Return the IP address of the virtual Ethernet interface over USB (`USBIPADDR?`).
+
+        Returns:
+            Dotted-decimal IP address string.
+        """
+        return self.query("USBIPADDR?")
+
+    def get_usb_netmask(self) -> str:
+        """Return the netmask of the virtual Ethernet interface over USB (`USBNETMASK?`).
+
+        Returns:
+            Dotted-decimal netmask string.
+        """
+        return self.query("USBNETMASK?")
 
     def get_ip_config_changed(self) -> bool:
         """Return `True` if network config has changed since last reboot (`IPCCH?`).
@@ -867,6 +994,14 @@ class CoBrite:
             `True` when a reboot is required for network changes to take effect.
         """
         return self._query_typed("IPCCH?", lambda x: bool(int(x)))
+
+    def get_dhcp(self) -> str:
+        """Return the DHCP setting for the Ethernet interface (`DHCP?`).
+
+        Returns:
+            `"on"` if DHCP is enabled, `"off"` if static IP is configured.
+        """
+        return self.query("DHCP?")
 
     def get_lockout(self) -> bool:
         """Return the write-lockout state (`LOCK?`).
@@ -1591,7 +1726,10 @@ class CoBrite:
 
     @requires_level(1)
     def set_ip_address(self, ip: str) -> None:
-        """Set the Ethernet IP address (`IPADDR`).
+        """Set the Ethernet IP address (`IPADDR`). DX and DX2 only.
+
+        For MX: [`set_ip_address_1`][cobrite.CoBrite.set_ip_address_1]/
+        [`set_ip_address_2`][cobrite.CoBrite.set_ip_address_2].
 
         Requires level 1.
 
@@ -1601,8 +1739,37 @@ class CoBrite:
         self.write(f"IPADDR {ip}")
 
     @requires_level(1)
+    def set_ip_address_1(self, ip: str) -> None:
+        """Set the front-panel Ethernet IP address (`IPADDR1`). MX only.
+
+        For DX/DX2: [`set_ip_address`][cobrite.CoBrite.set_ip_address].
+
+        Requires level 1.
+
+        Args:
+            ip: Dotted-decimal IP address string.
+        """
+        self.write(f"IPADDR1 {ip}")
+
+    @requires_level(1)
+    def set_ip_address_2(self, ip: str) -> None:
+        """Set the rear-panel Ethernet IP address (`IPADDR2`). MX only.
+
+        For DX/DX2: [`set_ip_address`][cobrite.CoBrite.set_ip_address].
+
+        Requires level 1.
+
+        Args:
+            ip: Dotted-decimal IP address string.
+        """
+        self.write(f"IPADDR2 {ip}")
+
+    @requires_level(1)
     def set_netmask(self, mask: str) -> None:
-        """Set the Ethernet netmask (`NETMASK`).
+        """Set the Ethernet netmask (`NETMASK`). DX and DX2 only.
+
+        For MX: [`set_netmask_1`][cobrite.CoBrite.set_netmask_1]/
+        [`set_netmask_2`][cobrite.CoBrite.set_netmask_2].
 
         Requires level 1.
 
@@ -1612,8 +1779,37 @@ class CoBrite:
         self.write(f"NETMASK {mask}")
 
     @requires_level(1)
+    def set_netmask_1(self, mask: str) -> None:
+        """Set the front-panel Ethernet netmask (`NETMASK1`). MX only.
+
+        For DX/DX2: [`set_netmask`][cobrite.CoBrite.set_netmask].
+
+        Requires level 1.
+
+        Args:
+            mask: Dotted-decimal netmask string.
+        """
+        self.write(f"NETMASK1 {mask}")
+
+    @requires_level(1)
+    def set_netmask_2(self, mask: str) -> None:
+        """Set the rear-panel Ethernet netmask (`NETMASK2`). MX only.
+
+        For DX/DX2: [`set_netmask`][cobrite.CoBrite.set_netmask].
+
+        Requires level 1.
+
+        Args:
+            mask: Dotted-decimal netmask string.
+        """
+        self.write(f"NETMASK2 {mask}")
+
+    @requires_level(1)
     def set_gateway_ip(self, ip: str) -> None:
-        """Set the gateway IP address (`GATEWAYIP`).
+        """Set the gateway IP address (`GATEWAYIP`). DX and DX2 only.
+
+        For MX: [`set_gateway_ip_1`][cobrite.CoBrite.set_gateway_ip_1]/
+        [`set_gateway_ip_2`][cobrite.CoBrite.set_gateway_ip_2].
 
         Requires level 1.
 
@@ -1621,6 +1817,32 @@ class CoBrite:
             ip: Dotted-decimal gateway IP string.
         """
         self.write(f"GATEWAYIP {ip}")
+
+    @requires_level(1)
+    def set_gateway_ip_1(self, ip: str) -> None:
+        """Set the front-panel gateway IP address (`GATEWAYIP1`). MX only.
+
+        For DX/DX2: [`set_gateway_ip`][cobrite.CoBrite.set_gateway_ip].
+
+        Requires level 1.
+
+        Args:
+            ip: Dotted-decimal gateway IP string.
+        """
+        self.write(f"GATEWAYIP1 {ip}")
+
+    @requires_level(1)
+    def set_gateway_ip_2(self, ip: str) -> None:
+        """Set the rear-panel gateway IP address (`GATEWAYIP2`). MX only.
+
+        For DX/DX2: [`set_gateway_ip`][cobrite.CoBrite.set_gateway_ip].
+
+        Requires level 1.
+
+        Args:
+            ip: Dotted-decimal gateway IP string.
+        """
+        self.write(f"GATEWAYIP2 {ip}")
 
     @requires_level(1)
     def set_dns_ip(self, ip: str) -> None:
