@@ -152,4 +152,5 @@ Publishing the release triggers `.github/workflows/publish.yml`, which:
 - [ ] `docs.yml` workflow added and pushed
 - [ ] CI green on `main`
 - [ ] Tag pushed and GitHub release published
+- [ ] Update docs on `Installation`
 - [ ] delete publish.md
