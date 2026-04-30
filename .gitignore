@@ -1,5 +1,3 @@
-ARM-fw
-
 *.csv
 .*
 !.gitignore
@@ -185,3 +183,4 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+src/cobrite/py.typed
