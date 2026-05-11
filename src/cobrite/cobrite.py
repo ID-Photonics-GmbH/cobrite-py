@@ -355,7 +355,7 @@ class CoBrite:
 
     @staticmethod
     def manual() -> None:
-        """Open the CoBrite user manual in the default web browser."""
+        """Open the [CoBrite user manual](https://id-photonics.com/download/cobrite-manual/) in the default web browser."""
         webbrowser.open("https://id-photonics.com/download/cobrite-manual/")
 
     @staticmethod

@@ -40,7 +40,7 @@ jobs:
       - name: Build docs
         run: make docs
 
-      - uses: actions/upload-pages-artifact@v7
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: site/
 
