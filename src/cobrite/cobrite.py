@@ -4,11 +4,22 @@ import enum
 import logging
 import re
 import socket
+import sys
+import warnings
 import webbrowser
 from collections.abc import Callable, Generator
+from dataclasses import dataclass, field
 from functools import wraps
 from pathlib import Path
 from typing import Any, Protocol, TypeVar, cast, overload
+
+if sys.version_info >= (3, 12):
+    from typing import override  # pragma: no cover
+else:
+
+    def override(f: Any) -> Any:  # noqa: E302
+        return f
+
 
 from pyvisa import ResourceManager
 
@@ -29,6 +40,8 @@ class ScpiStatus(enum.IntEnum):
 
 
 _ERR_RE = re.compile(r"^ERR\s*(\d+),\s*(.*)", re.DOTALL)
+
+_UNSET: bool = cast(bool, object())
 
 
 class CoBriteError(RuntimeError):
@@ -177,38 +190,367 @@ def _parse_temp(raw: str) -> dict[str, int | float]:
     }
 
 
-class CoBrite:
-    """Driver for an ID Photonics CoBrite tunable laser controller.
+def _parse_bool(raw: str) -> bool:
+    return bool(int(raw))
 
-    Connect with `open()`, control lasers with port commands (explicit CSD or
-    property API), and disconnect with `close()`.  Level-1 commands require a
-    password; supply it via `login(1)` or `login_from_file(path)`.
 
-    **CSD addressing** — most port commands accept `chassis`, `slot`, and
-    `device` integers.  Passing `0` (the default) expands to every known port
-    at that level, so `set_state(True)` enables all lasers on the unit.
-    Multi-port queries return a tuple of `(chassis, slot, device, value)`
-    tuples, one per matched port.
+def _unpack_config(
+    frequency_or_config: "float | dict[str, float | bool | int]",
+    offset: float,
+    power: float,
+    state: bool,
+    dither: int,
+) -> "tuple[float, float, float, bool, int]":
+    if isinstance(frequency_or_config, dict):
+        cfg = frequency_or_config
+        return (
+            float(cfg["frequency"]),
+            float(cfg["offset"]),
+            float(cfg["power"]),
+            bool(cfg["state"]),
+            int(cfg["dither"]),
+        )
+    return frequency_or_config, offset, power, state, dither
 
-    **Property API** — call `set_active_port(c, s, d)` once, then read and
-    write laser parameters as plain Python attributes (`cb.wavelength`,
-    `cb.power`, etc.).
+
+def _parse_layout_response(resp: str) -> dict[int, dict[int, int]]:
+    """Parse a raw ``LAY?`` response into ``{chassis: {slot: device_count}}``.
+
+    Raises `ValueError` with a descriptive message on malformed lines so the
+    caller can convert it to a `CoBriteError` with context.
+    """
+    layout: dict[int, dict[int, int]] = {}
+    for lineno, line in enumerate(resp.splitlines(), start=1):
+        parts = line.split(",")
+        if len(parts) < 4:
+            raise ValueError(
+                f"LAY? line {lineno}: expected ≥4 comma-separated fields, got {len(parts)}: {line!r}"
+            )
+        try:
+            chassis_nr = int(parts[1])
+            slot_nr = int(parts[2])
+        except ValueError as exc:
+            raise ValueError(f"LAY? line {lineno}: non-integer chassis/slot in {line!r}") from exc
+        device_desc = parts[3].strip()
+        dc = 0
+        if len(device_desc) > 3:
+            try:
+                dc = int(device_desc[3:])
+            except ValueError as exc:
+                raise ValueError(
+                    f"LAY? line {lineno}: cannot parse device count from {device_desc!r}"
+                ) from exc
+        layout.setdefault(chassis_nr, {})[slot_nr] = dc
+    return layout
+
+
+# --- CSD command registry ---
+
+
+@dataclass
+class CommandSpec:
+    """Specification for a single CSD port command pair."""
+
+    get_cmd: str
+    set_cmd: str | None = None
+    parse_fn: Callable[[str], Any] = field(default=str)
+    serialize_fn: Callable[[Any], Any] = field(default=lambda x: x)
+
+
+_COMMANDS: dict[str, CommandSpec] = {
+    "state": CommandSpec(
+        get_cmd="STAT? {csd}",
+        set_cmd="STAT {csd},{v}",
+        parse_fn=_parse_bool,
+        serialize_fn=int,
+    ),
+    "wavelength": CommandSpec(
+        get_cmd="WAV? {csd}",
+        set_cmd="WAV {csd},{v}",
+        parse_fn=float,
+    ),
+    "wavelength_limits": CommandSpec(
+        get_cmd="WAV:LIM? {csd}",
+        parse_fn=_parse_min_max,
+    ),
+    "frequency": CommandSpec(
+        get_cmd="FREQ? {csd}",
+        set_cmd="FREQ {csd},{v}",
+        parse_fn=float,
+    ),
+    "frequency_limits": CommandSpec(
+        get_cmd="FREQ:LIM? {csd}",
+        parse_fn=_parse_min_max,
+    ),
+    "power": CommandSpec(
+        get_cmd="POW? {csd}",
+        set_cmd="POW {csd},{v}",
+        parse_fn=float,
+    ),
+    "actual_power": CommandSpec(
+        get_cmd="APOW? {csd}",
+        parse_fn=float,
+    ),
+    "power_limits": CommandSpec(
+        get_cmd="POW:LIM? {csd}",
+        parse_fn=_parse_min_max,
+    ),
+    "offset": CommandSpec(
+        get_cmd="OFF? {csd}",
+        set_cmd="OFF {csd},{v}",
+        parse_fn=float,
+    ),
+    "offset_limits": CommandSpec(
+        get_cmd="OFF:LIM? {csd}",
+        parse_fn=float,
+    ),
+    "limits": CommandSpec(
+        get_cmd="LIM? {csd}",
+        parse_fn=_parse_limits,
+    ),
+    "config": CommandSpec(
+        get_cmd="CONF? {csd}",
+        parse_fn=_parse_config_str,
+    ),
+    "monitor": CommandSpec(
+        get_cmd="MON? {csd}",
+        parse_fn=_parse_monitor,
+    ),
+    "dither": CommandSpec(
+        get_cmd="DIT? {csd}",
+        set_cmd="DIT {csd},{v}",
+        parse_fn=_parse_bool,
+        serialize_fn=int,
+    ),
+    "laser_alarm": CommandSpec(
+        get_cmd="LALAR? {csd}",
+        parse_fn=int,
+    ),
+    "trigger_out_active": CommandSpec(
+        get_cmd="TRIOUTACT? {csd}",
+        set_cmd="TRIOUTACT {csd},{v}",
+        parse_fn=_parse_bool,
+        serialize_fn=int,
+    ),
+    "trigger_config": CommandSpec(
+        get_cmd="TRICONF? {csd}",
+        parse_fn=_parse_config_str,
+    ),
+}
+
+
+class LaserPort:
+    """A handle to a single laser port on a CoBrite controller.
+
+    Returned by `CoBrite.port(chassis, slot, device)`.  Provides the same
+    property API as `CoBrite` (wavelength, power, state, etc.) but bound to a
+    specific port — no `set_active_port()` call required, and multiple ports
+    can be used simultaneously.
 
     Example:
         ```python
-        cb = CoBrite(address="192.168.1.99", timeout=20)
+        cb = CoBrite(address="192.168.1.99")
         cb.open()
 
-        # Explicit CSD style
-        cb.set_wavelength(1550.0, 1, 1, 1)
-        wav = cb.get_wavelength(1, 1, 1)[0][-1]
+        # Direct use
+        port = cb.port(1, 1, 1)
+        port.wavelength = 1550.0
 
-        # Property style
-        cb.set_active_port(1, 1, 1)
-        cb.wavelength = 1550.0
-        print(cb.wavelength)
+        # Context manager (port is just self — no save/restore side-effects)
+        with cb.port(1, 1, 1) as port:
+            port.wavelength = 1550.0
+            print(port.wavelength)
+        ```
+    """
 
-        cb.close()
+    _cb: "CoBrite"
+    chassis: int
+    slot: int
+    device: int
+
+    def __init__(self, cb: "CoBrite", chassis: int, slot: int, device: int) -> None:
+        self._cb = cb
+        self.chassis = chassis
+        self.slot = slot
+        self.device = device
+
+    def __enter__(self) -> "LaserPort":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        pass
+
+    # --- tuning parameters ---
+
+    @property
+    def wavelength(self) -> float:
+        """Target wavelength in nm."""
+        return self._cb.get_wavelength(self.chassis, self.slot, self.device)[0][-1]
+
+    @wavelength.setter
+    def wavelength(self, value: float) -> None:
+        self._cb.set_wavelength(value, self.chassis, self.slot, self.device)
+
+    @property
+    def wavelength_limits(self) -> dict[str, float]:
+        """Tunable wavelength range as `{"min": float, "max": float}` in nm."""
+        return self._cb.get_wavelength_limits(self.chassis, self.slot, self.device)[0][-1]
+
+    @property
+    def frequency(self) -> float:
+        """Target frequency in THz."""
+        return self._cb.get_frequency(self.chassis, self.slot, self.device)[0][-1]
+
+    @frequency.setter
+    def frequency(self, value: float) -> None:
+        self._cb.set_frequency(value, self.chassis, self.slot, self.device)
+
+    @property
+    def frequency_limits(self) -> dict[str, float]:
+        """Tunable frequency range as `{"min": float, "max": float}` in THz."""
+        return self._cb.get_frequency_limits(self.chassis, self.slot, self.device)[0][-1]
+
+    @property
+    def power(self) -> float:
+        """Target output power in dBm."""
+        return self._cb.get_power(self.chassis, self.slot, self.device)[0][-1]
+
+    @power.setter
+    def power(self, value: float) -> None:
+        self._cb.set_power(value, self.chassis, self.slot, self.device)
+
+    @property
+    def actual_power(self) -> float:
+        """Actual measured output power in dBm."""
+        return self._cb.get_actual_power(self.chassis, self.slot, self.device)[0][-1]
+
+    @property
+    def power_limits(self) -> dict[str, float]:
+        """Output power range as `{"min": float, "max": float}` in dBm."""
+        return self._cb.get_power_limits(self.chassis, self.slot, self.device)[0][-1]
+
+    @property
+    def offset(self) -> float:
+        """Frequency offset in GHz."""
+        return self._cb.get_offset(self.chassis, self.slot, self.device)[0][-1]
+
+    @offset.setter
+    def offset(self, value: float) -> None:
+        self._cb.set_offset(value, self.chassis, self.slot, self.device)
+
+    @property
+    def offset_limits(self) -> float:
+        """Symmetric offset limit in GHz.  Allowed range is `[-offset_limits, +offset_limits]`."""
+        return self._cb.get_offset_limits(self.chassis, self.slot, self.device)[0][-1]
+
+    @property
+    def limits(self) -> dict[str, float]:
+        """All tuning limits.  Keys: `freq_min`, `freq_max` (THz), `offset_range` (GHz), `pow_min`, `pow_max` (dBm)."""
+        return self._cb.get_limits(self.chassis, self.slot, self.device)[0][-1]
+
+    # --- state / control ---
+
+    @property
+    def state(self) -> bool:
+        """Laser output enable state."""
+        return self._cb.get_state(self.chassis, self.slot, self.device)[0][-1]
+
+    @state.setter
+    def state(self, value: bool) -> None:
+        self._cb.set_state(value, self.chassis, self.slot, self.device)
+
+    @property
+    def dither(self) -> bool:
+        """Dither enable state."""
+        return self._cb.get_dither(self.chassis, self.slot, self.device)[0][-1]
+
+    @dither.setter
+    def dither(self, value: bool) -> None:
+        self._cb.set_dither(value, self.chassis, self.slot, self.device)
+
+    @property
+    def laser_alarm(self) -> int:
+        """Laser alarm code.  `0` = no alarm."""
+        return self._cb.get_laser_alarm(self.chassis, self.slot, self.device)[0][-1]
+
+    @property
+    def laser_config(self) -> dict[str, float | bool | int]:
+        """Full laser configuration.  Keys: `frequency`, `offset`, `power`, `state`, `busy`, `dither`."""
+        return self._cb.get_config(self.chassis, self.slot, self.device)[0][-1]
+
+    @laser_config.setter
+    def laser_config(self, value: dict[str, float | bool | int]) -> None:
+        self._cb.set_config(value, chassis=self.chassis, slot=self.slot, device=self.device)
+
+    @property
+    def monitor(self) -> dict[str, float]:
+        """Thermal and current monitor readings.  Keys: `ld_chip_temp`, `base_temp`, `ld_current_ma`, `tec_current_ma`."""
+        return self._cb.get_monitor(self.chassis, self.slot, self.device)[0][-1]
+
+    # --- trigger ---
+
+    @property
+    def trigger_out_active(self) -> bool:
+        """Whether this port contributes to the hardware trigger output."""
+        return self._cb.get_trigger_out_active(self.chassis, self.slot, self.device)[0][-1]
+
+    @trigger_out_active.setter
+    def trigger_out_active(self, value: bool) -> None:
+        self._cb.set_trigger_out_active(value, self.chassis, self.slot, self.device)
+
+    @property
+    def trigger_config(self) -> dict[str, float | bool | int]:
+        """Buffered trigger configuration.  Same keys as `laser_config`.  Applied on hardware trigger."""
+        return self._cb.get_trigger_config(self.chassis, self.slot, self.device)[0][-1]
+
+    @trigger_config.setter
+    def trigger_config(self, value: dict[str, float | bool | int]) -> None:
+        self._cb.set_trigger_config(value, chassis=self.chassis, slot=self.slot, device=self.device)
+
+    @override
+    def __repr__(self) -> str:
+        return f"LaserPort({self._cb!r}, {self.chassis}, {self.slot}, {self.device})"
+
+
+class CoBrite:
+    """Driver for an ID Photonics CoBrite tunable laser controller.
+
+    Connect with `open()` (or use as a context manager), control lasers, and
+    disconnect with `close()`.  Level-1 commands require a password; supply it
+    via `login(1)` or `login_from_file(path)`.
+
+    **Three calling styles** — choose one based on your use case:
+
+    **1. LaserPort** (preferred for single-port work) — `cb.port(c, s, d)`
+    returns a [`LaserPort`][cobrite.LaserPort] bound to that address.
+    Properties on `LaserPort` return scalars directly.  Multiple ports can be
+    held simultaneously.
+
+    **2. CSD methods** (preferred for multi-port work) — `get_*`/`set_*`
+    methods accept `chassis`, `slot`, `device` integers.  Passing `0` (the
+    default) expands to every port at that level.  Multi-port queries return a
+    tuple of `(chassis, slot, device, value)` tuples.
+
+    **3. Active-port properties** (**deprecated**) — call `set_active_port(c, s, d)`
+    once, then read/write via `cb.wavelength`, `cb.power`, etc.  Emits
+    `DeprecationWarning`; use style 1 (`LaserPort`) for new code.
+
+    Example:
+        ```python
+        # Context manager — open() and close() are called automatically
+        with CoBrite(address="192.168.1.99", timeout=20) as cb:
+
+            # LaserPort style — direct or as context manager
+            port = cb.port(1, 1, 1)
+            port.wavelength = 1550.0
+
+            with cb.port(1, 1, 1) as port:
+                print(port.wavelength)
+
+            # CSD style (all ports at once)
+            cb.set_wavelength(1550.0)
+            for c, s, d, wav in cb.get_wavelength():
+                print(f"{c},{s},{d} → {wav} nm")
         ```
     """
 
@@ -360,14 +702,15 @@ class CoBrite:
 
     @staticmethod
     def _redact_pass(cmd: str) -> str:
-        if "PASS" in cmd and len(cmd.split(" ")) > 1 and len(cmd.split(" ")[1]) > 1:
+        parts = cmd.split(" ")
+        if "PASS" in cmd and len(parts) > 1 and len(parts[1]) > 1:
             return "PASS <redacted>"
         return cmd
 
     def __init__(
         self,
         address: str = "cobrite.local",
-        port: int = 2000,
+        tcp_port: int = 2000,
         timeout: int = 10,
         max_retries: int = 3,
         open: bool = False,  # noqa: A002
@@ -377,7 +720,7 @@ class CoBrite:
 
         Args:
             address: Hostname or IP address of the CoBrite unit.
-            port: TCP port number exposed by the unit (default 2000).
+            tcp_port: TCP port number exposed by the unit (default 2000).
             timeout: Socket timeout in seconds.  Must be longer than the
                 maximum laser tuning time (typically 10-30 s).
             max_retries: How many times to retry a command when the device
@@ -398,7 +741,7 @@ class CoBrite:
             ```
         """
         self.address: str = address
-        self.port: int = port
+        self.tcp_port: int = tcp_port
         self.timeout: int = timeout
         self.max_retries: int = max_retries
         self._layout: dict[int, dict[int, dict[int, str]]] = {}
@@ -406,7 +749,7 @@ class CoBrite:
         self._transport: Transport | None = None
         self._injected_transport: Transport | None = _transport
         self._user_level: int = 0
-        self._active_port: tuple[int, int, int] | None = None
+        self._active_port: LaserPort | None = None
         if open:
             self.open()
 
@@ -430,7 +773,7 @@ class CoBrite:
             self._transport = self._injected_transport
         else:  # pragma: no cover
             ip = socket.gethostbyname(self.address)
-            resource = f"TCPIP::{ip}::{self.port}::SOCKET"
+            resource = f"TCPIP::{ip}::{self.tcp_port}::SOCKET"
             logger.info(f"Opening connection to {resource}")
             rm = ResourceManager()
             inst = rm.open_resource(
@@ -505,12 +848,24 @@ class CoBrite:
         """
         logger.info("Closing instrument connection")
         if disable:
-            self.set_state()
+            try:
+                self.set_state(False)
+            except Exception:
+                logger.debug(
+                    "set_state(False) failed during close — connection may be broken", exc_info=True
+                )
         if self._transport:
             self._transport.close()
         self._transport = None
         self._connected = False
         self._user_level = 0
+
+    def __enter__(self) -> "CoBrite":
+        self.open()
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
 
     # -------------------------------------------------------------------------
     # Auth
@@ -595,22 +950,18 @@ class CoBrite:
             Nested dict `{chassis: {slot: {device: type_string}}}`.
         """
         resp: str = self.query("LAY?")
+        try:
+            parsed = _parse_layout_response(resp)
+        except ValueError as exc:
+            raise CoBriteError(ScpiStatus.COMMAND_ERROR, str(exc)) from exc
         self._layout = {}
-        for line in resp.splitlines():
-            _, chassis_nr, slot_nr, device_desc, *_ = line.split(",")
-            chassis_nr = int(chassis_nr)
-            slot_nr = int(slot_nr)
-            dc = 0
-            if len(device_desc) > 3:
-                dc = int(device_desc[3:])
-            if chassis_nr not in self._layout:
-                self._layout[chassis_nr] = {}
-            if slot_nr not in self._layout[chassis_nr]:
-                self._layout[chassis_nr][slot_nr] = {}
-            for device_nr in range(1, dc + 1):
-                self._layout[chassis_nr][slot_nr][device_nr] = self.query(
-                    f"TYP? {chassis_nr},{slot_nr},{device_nr}"
-                )
+        for chassis_nr, slots in parsed.items():
+            self._layout[chassis_nr] = {}
+            for slot_nr, dc in slots.items():
+                self._layout[chassis_nr][slot_nr] = {
+                    device_nr: self.query(f"TYP? {chassis_nr},{slot_nr},{device_nr}")
+                    for device_nr in range(1, dc + 1)
+                }
         return self._layout
 
     def format_layout(self, indent: int = 2) -> str:
@@ -629,22 +980,20 @@ class CoBrite:
                 Device 1: GC
             ```
         """
-        if not self._layout:
-            self.layout()
-        ret = ""
+        self._ensure_layout()
+        lines: list[str] = []
         for chassis_nr, slots in self._layout.items():
-            ret += f"{' ' * indent * 0}Chassis {chassis_nr}:\n"
+            lines.append(f"Chassis {chassis_nr}:")
             for slot_nr, devices in slots.items():
-                ret += f"{' ' * indent * 1}Slot {slot_nr}:\n"
+                lines.append(f"{' ' * indent}Slot {slot_nr}:")
                 for device_nr, device_type in devices.items():
-                    ret += f"{' ' * indent * 2}Device {device_nr}: {device_type}\n"
-        return ret[:-1]
+                    lines.append(f"{' ' * indent * 2}Device {device_nr}: {device_type}")
+        return "\n".join(lines)
 
     def full_info(self, indent: int = 2) -> str:
         """Return identification, layout, and per-port laser state as a string.
 
-        Queries frequency, wavelength, power, and enable state for every port
-        in the cached layout.
+        Queries the configuration for every port in the cached layout.
 
         Args:
             indent: Number of spaces per indentation level.
@@ -652,42 +1001,36 @@ class CoBrite:
         Returns:
             Multi-line string suitable for console display.
         """
+        self._ensure_layout()
+        lines: list[str] = [self.idn()]
+        for chassis_nr, slots in self._layout.items():
+            lines.append(f"{' ' * indent}Chassis {chassis_nr}:")
+            for slot_nr, devices in slots.items():
+                lines.append(f"{' ' * indent * 2}Slot {slot_nr}:")
+                for device_nr, device_type in devices.items():
+                    cfg = self.get_config(chassis_nr, slot_nr, device_nr)[0][-1]
+                    state_str = "ENABLED" if cfg["state"] else "disabled"
+                    lines.append(
+                        f"{' ' * indent * 3}Device {device_nr}: {device_type}"
+                        f" - {cfg['frequency']:.4f} THz ({299792.458 / cfg['frequency']:.2f} nm)"
+                        f" @ {cfg['power']:.2f} dBm: {state_str}"
+                    )
+        return "\n".join(lines)
+
+    def _ensure_layout(self) -> None:
         if not self._layout:
             self.layout()
-        ret = self.idn()
-        ret += "\n"
-        for chassis_nr, slots in self._layout.items():
-            ret += f"{' ' * indent * 1}Chassis {chassis_nr}:\n"
-            for slot_nr, devices in slots.items():
-                ret += f"{' ' * indent * 2}Slot {slot_nr}:\n"
-                for device_nr, device_type in devices.items():
-                    pwr = self.get_power(chassis_nr, slot_nr, device_nr)[0][-1]
-                    freq = self.get_frequency(chassis_nr, slot_nr, device_nr)[0][-1]
-                    wl = self.get_wavelength(chassis_nr, slot_nr, device_nr)[0][-1]
-                    state = self.get_state(chassis_nr, slot_nr, device_nr)[0][-1]
-                    state_str = "ENABLED" if state else "disabled"
-                    pwr_str = f"{pwr:.2f} dBm"
-                    freq_str = f"{freq:.4f} THz"
-                    wl_str = f"{wl:.2f} nm"
-                    ret += (
-                        f"{' ' * indent * 3}Device {device_nr}: {device_type}"
-                        f" - {freq_str} ({wl_str}) @ {pwr_str}: {state_str}\n"
-                    )
-        return ret[:-1]
 
     def _chassis_count(self) -> int:
-        if not self._layout:
-            self.layout()
+        self._ensure_layout()
         return len(self._layout)
 
     def _slot_count(self, chassis: int) -> int:
-        if not self._layout:
-            self.layout()
+        self._ensure_layout()
         return len(self._layout[chassis])
 
     def _device_count(self, chassis: int, slot: int) -> int:
-        if not self._layout:
-            self.layout()
+        self._ensure_layout()
         return len(self._layout[chassis][slot])
 
     # -------------------------------------------------------------------------
@@ -713,6 +1056,28 @@ class CoBrite:
             self.wait(chassis, slot, device)
         return tuple(retval)
 
+    def _execute_get(
+        self, name: str, chassis: int = 0, slot: int = 0, device: int = 0
+    ) -> tuple[tuple[int, int, int, Any], ...]:
+        spec = _COMMANDS[name]
+        return self._cmd_csd(
+            spec.get_cmd, chassis, slot, device, ret_type=spec.parse_fn, wait=False
+        )
+
+    def _execute_set(
+        self,
+        name: str,
+        value: Any,
+        chassis: int = 0,
+        slot: int = 0,
+        device: int = 0,
+        wait: bool = True,
+    ) -> None:
+        spec = _COMMANDS[name]
+        if spec.set_cmd is None:
+            raise AttributeError(f"{name!r} is read-only")
+        self._cmd_csd(spec.set_cmd, chassis, slot, device, v=spec.serialize_fn(value), wait=wait)
+
     def wait(self, chassis: int = 0, slot: int = 0, device: int = 0) -> None:
         """Poll `BUSY?` until all matched ports finish tuning.
 
@@ -724,17 +1089,13 @@ class CoBrite:
             slot: Slot number, or `0` for all.
             device: Device number, or `0` for all.
         """
-        busy = False
+        ports = list(self._interpolate_csd(chassis, slot, device))
         while True:
-            for c, s, d in self._interpolate_csd(chassis, slot, device):
-                busy_repl = self.query("BUSY? {csd}".format(csd=f"{c},{s},{d}"))
-                busy_parse = True
-                if len(busy_repl) > 0:
-                    busy_parse = bool(int(busy_repl))
-                busy = busy or busy_parse
-            if not busy:
+            if not any(
+                _parse_bool(r) if (r := self.query(f"BUSY? {c},{s},{d}")) else True
+                for c, s, d in ports
+            ):
                 break
-            busy = False
 
     # -------------------------------------------------------------------------
     # Active port
@@ -743,22 +1104,68 @@ class CoBrite:
     def set_active_port(self, chassis: int, slot: int, device: int) -> None:
         """Set the port used by all property accessors.
 
+        Deprecated:
+            Use [`port`][cobrite.CoBrite.port] instead.
+
         Args:
             chassis: Chassis number (must be non-zero).
             slot: Slot number (must be non-zero).
             device: Device number (must be non-zero).
         """
-        self._active_port = (chassis, slot, device)
+        warnings.warn(
+            "set_active_port() is deprecated. Use cb.port(c, s, d) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self._active_port = LaserPort(self, chassis, slot, device)
 
-    def get_active_port(self) -> tuple[int, int, int] | None:
-        """Return the currently active port, or `None` if not set.
+    def get_active_port(self) -> LaserPort | None:
+        """Return the currently active port as a `LaserPort`, or `None` if not set.
 
-        Returns:
-            `(chassis, slot, device)` tuple, or `None`.
+        Deprecated:
+            Use [`port`][cobrite.CoBrite.port] instead.
         """
+        warnings.warn(
+            "get_active_port() is deprecated. Use cb.port(c, s, d) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return self._active_port
 
-    def _require_active_port(self) -> tuple[int, int, int]:
+    def port(self, chassis: int, slot: int, device: int) -> LaserPort:
+        """Return a `LaserPort` handle for the given port.
+
+        `LaserPort` supports both direct property access and use as a context
+        manager.  Multiple ports can be used simultaneously with no shared state.
+
+        Args:
+            chassis: Chassis number (must be non-zero).
+            slot: Slot number (must be non-zero).
+            device: Device number (must be non-zero).
+
+        Returns:
+            A `LaserPort` bound to this controller and the given CSD address.
+
+        Example:
+            ```python
+            # Direct use
+            port = cb.port(1, 1, 1)
+            port.wavelength = 1550.0
+
+            # Context manager
+            with cb.port(1, 1, 1) as port:
+                port.wavelength = 1550.0
+            ```
+        """
+        return LaserPort(self, chassis, slot, device)
+
+    def _require_active_port(self) -> LaserPort:
+        warnings.warn(
+            "Active-port properties (cb.wavelength, cb.state, …) are deprecated. "
+            "Use cb.port(c, s, d).<prop> instead.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
         if self._active_port is None:
             raise RuntimeError("No active port set. Call set_active_port() first.")
         return self._active_port
@@ -796,7 +1203,7 @@ class CoBrite:
         Returns:
             `True` if the device is idle.
         """
-        return self._query_typed("*OPC?", lambda x: bool(int(x)))
+        return self._query_typed("*OPC?", _parse_bool)
 
     def opc_wait(self) -> None:
         """Block until all pending operations complete (`*WAI`).
@@ -829,7 +1236,7 @@ class CoBrite:
             `False` when the interlock is satisfied and lasers can be enabled;
             `True` when the interlock is open (lasers blocked).
         """
-        return self._query_typed("INTL?", lambda x: bool(int(x)))
+        return self._query_typed("INTL?", _parse_bool)
 
     def get_remote(self) -> bool:
         """Return `True` if the unit is in remote control mode (`REMO?`).
@@ -837,7 +1244,7 @@ class CoBrite:
         Returns:
             `True` = remote mode active.
         """
-        return self._query_typed("REMO?", lambda x: bool(int(x)))
+        return self._query_typed("REMO?", _parse_bool)
 
     def get_ip_address(self) -> str:
         """Return the Ethernet IP address (`IPADDR?`). DX and DX2 only.
@@ -993,7 +1400,7 @@ class CoBrite:
         Returns:
             `True` when a reboot is required for network changes to take effect.
         """
-        return self._query_typed("IPCCH?", lambda x: bool(int(x)))
+        return self._query_typed("IPCCH?", _parse_bool)
 
     def get_dhcp(self) -> str:
         """Return the DHCP setting for the Ethernet interface (`DHCP?`).
@@ -1009,7 +1416,7 @@ class CoBrite:
         Returns:
             `True` when another session holds the write lock.
         """
-        return self._query_typed("LOCK?", lambda x: bool(int(x)))
+        return self._query_typed("LOCK?", _parse_bool)
 
     def get_param_refresh(self) -> int:
         """Return the parameter-refresh change counter (`PREF?`).
@@ -1028,7 +1435,7 @@ class CoBrite:
         Returns:
             `True` = factory defaults applied on next start.
         """
-        return self._query_typed("STADEF?", lambda x: bool(int(x)))
+        return self._query_typed("STADEF?", _parse_bool)
 
     def get_enable_autostart(self) -> bool:
         """Return `True` if laser on/off state is preserved across reboots (`ENABAUTOSTA?`).
@@ -1036,7 +1443,7 @@ class CoBrite:
         Returns:
             `True` = autostart enabled.
         """
-        return self._query_typed("ENABAUTOSTA?", lambda x: bool(int(x)))
+        return self._query_typed("ENABAUTOSTA?", _parse_bool)
 
     def get_trigger_delay(self) -> int:
         """Return the hardware trigger delay in milliseconds (`TRIDEL?`).
@@ -1084,7 +1491,7 @@ class CoBrite:
         Returns:
             `True` = echo on.
         """
-        return self._query_typed("ECHO?", lambda x: bool(int(x)))
+        return self._query_typed("ECHO?", _parse_bool)
 
     def set_echo(self, enable: bool) -> None:
         """Enable or disable command echo (`ECHO`).
@@ -1158,7 +1565,7 @@ class CoBrite:
 
     def set_state(
         self,
-        state: bool = False,
+        state: bool = _UNSET,
         chassis: int = 0,
         slot: int = 0,
         device: int = 0,
@@ -1168,14 +1575,25 @@ class CoBrite:
 
         Property equivalent: [`state`][cobrite.CoBrite.state].
 
+        The `state` parameter defaults to `False` (laser disabled) for safety.
+        Omitting it will emit a `UserWarning` to make the implicit disable explicit.
+
         Args:
-            state: `True` to enable, `False` to disable.
+            state: `True` to enable, `False` to disable. Defaults to `False`.
             chassis: Chassis number, or `0` for all.
             slot: Slot number, or `0` for all.
             device: Device number, or `0` for all.
             wait: When `True`, poll `BUSY?` until tuning completes.
         """
-        self._cmd_csd("STAT {csd},{state}", chassis, slot, device, state=int(state), wait=wait)
+        if state is _UNSET:
+            warnings.warn(
+                "set_state() called without an explicit state argument — defaulting to False "
+                "(laser disabled). Pass state=False explicitly to suppress this warning.",
+                UserWarning,
+                stacklevel=2,
+            )
+            state = False
+        self._execute_set("state", state, chassis, slot, device, wait=wait)
 
     def get_state(
         self, chassis: int = 0, slot: int = 0, device: int = 0
@@ -1192,9 +1610,7 @@ class CoBrite:
         Returns:
             Tuple of `(chassis, slot, device, enabled)` per matched port.
         """
-        return self._cmd_csd(
-            "STAT? {csd}", chassis, slot, device, ret_type=lambda x: bool(int(x)), wait=False
-        )
+        return self._execute_get("state", chassis, slot, device)  # type: ignore[return-value]
 
     def set_wavelength(
         self,
@@ -1215,7 +1631,7 @@ class CoBrite:
             device: Device number, or `0` for all.
             wait: When `True`, poll `BUSY?` until tuning completes.
         """
-        self._cmd_csd("WAV {csd},{wav}", chassis, slot, device, wav=wavelength, wait=wait)
+        self._execute_set("wavelength", wavelength, chassis, slot, device, wait=wait)
 
     def get_wavelength(
         self, chassis: int = 0, slot: int = 0, device: int = 0
@@ -1232,7 +1648,7 @@ class CoBrite:
         Returns:
             Tuple of `(chassis, slot, device, wavelength_nm)` per matched port.
         """
-        return self._cmd_csd("WAV? {csd}", chassis, slot, device, ret_type=float, wait=False)
+        return self._execute_get("wavelength", chassis, slot, device)  # type: ignore[return-value]
 
     def get_wavelength_limits(
         self, chassis: int = 0, slot: int = 0, device: int = 0
@@ -1250,9 +1666,7 @@ class CoBrite:
             Tuple of `(chassis, slot, device, limits)` where `limits` is
             `{"min": float, "max": float}` in nanometres.
         """
-        return self._cmd_csd(
-            "WAV:LIM? {csd}", chassis, slot, device, ret_type=_parse_min_max, wait=False
-        )
+        return self._execute_get("wavelength_limits", chassis, slot, device)  # type: ignore[return-value]
 
     def set_frequency(
         self,
@@ -1273,7 +1687,7 @@ class CoBrite:
             device: Device number, or `0` for all.
             wait: When `True`, poll `BUSY?` until tuning completes.
         """
-        self._cmd_csd("FREQ {csd},{freq}", chassis, slot, device, freq=frequency, wait=wait)
+        self._execute_set("frequency", frequency, chassis, slot, device, wait=wait)
 
     def get_frequency(
         self, chassis: int = 0, slot: int = 0, device: int = 0
@@ -1290,7 +1704,7 @@ class CoBrite:
         Returns:
             Tuple of `(chassis, slot, device, frequency_thz)` per matched port.
         """
-        return self._cmd_csd("FREQ? {csd}", chassis, slot, device, ret_type=float, wait=False)
+        return self._execute_get("frequency", chassis, slot, device)  # type: ignore[return-value]
 
     def get_frequency_limits(
         self, chassis: int = 0, slot: int = 0, device: int = 0
@@ -1308,9 +1722,7 @@ class CoBrite:
             Tuple of `(chassis, slot, device, limits)` where `limits` is
             `{"min": float, "max": float}` in terahertz.
         """
-        return self._cmd_csd(
-            "FREQ:LIM? {csd}", chassis, slot, device, ret_type=_parse_min_max, wait=False
-        )
+        return self._execute_get("frequency_limits", chassis, slot, device)  # type: ignore[return-value]
 
     def set_power(
         self,
@@ -1331,7 +1743,7 @@ class CoBrite:
             device: Device number, or `0` for all.
             wait: When `True`, poll `BUSY?` until tuning completes.
         """
-        self._cmd_csd("POW {csd},{pow}", chassis, slot, device, pow=power, wait=wait)
+        self._execute_set("power", power, chassis, slot, device, wait=wait)
 
     def get_power(
         self, chassis: int = 0, slot: int = 0, device: int = 0
@@ -1349,7 +1761,7 @@ class CoBrite:
         Returns:
             Tuple of `(chassis, slot, device, power_dbm)` per matched port.
         """
-        return self._cmd_csd("POW? {csd}", chassis, slot, device, ret_type=float, wait=False)
+        return self._execute_get("power", chassis, slot, device)  # type: ignore[return-value]
 
     def get_actual_power(
         self, chassis: int = 0, slot: int = 0, device: int = 0
@@ -1366,7 +1778,7 @@ class CoBrite:
         Returns:
             Tuple of `(chassis, slot, device, actual_power_dbm)` per matched port.
         """
-        return self._cmd_csd("APOW? {csd}", chassis, slot, device, ret_type=float, wait=False)
+        return self._execute_get("actual_power", chassis, slot, device)  # type: ignore[return-value]
 
     def get_power_limits(
         self, chassis: int = 0, slot: int = 0, device: int = 0
@@ -1384,9 +1796,7 @@ class CoBrite:
             Tuple of `(chassis, slot, device, limits)` where `limits` is
             `{"min": float, "max": float}` in dBm.
         """
-        return self._cmd_csd(
-            "POW:LIM? {csd}", chassis, slot, device, ret_type=_parse_min_max, wait=False
-        )
+        return self._execute_get("power_limits", chassis, slot, device)  # type: ignore[return-value]
 
     def set_offset(
         self,
@@ -1409,7 +1819,7 @@ class CoBrite:
             device: Device number, or `0` for all.
             wait: When `True`, poll `BUSY?` until tuning completes.
         """
-        self._cmd_csd("OFF {csd},{off}", chassis, slot, device, off=offset, wait=wait)
+        self._execute_set("offset", offset, chassis, slot, device, wait=wait)
 
     def get_offset(
         self, chassis: int = 0, slot: int = 0, device: int = 0
@@ -1426,7 +1836,7 @@ class CoBrite:
         Returns:
             Tuple of `(chassis, slot, device, offset_ghz)` per matched port.
         """
-        return self._cmd_csd("OFF? {csd}", chassis, slot, device, ret_type=float, wait=False)
+        return self._execute_get("offset", chassis, slot, device)  # type: ignore[return-value]
 
     def get_offset_limits(
         self, chassis: int = 0, slot: int = 0, device: int = 0
@@ -1444,7 +1854,7 @@ class CoBrite:
         Returns:
             Tuple of `(chassis, slot, device, offset_limit_ghz)` per matched port.
         """
-        return self._cmd_csd("OFF:LIM? {csd}", chassis, slot, device, ret_type=float, wait=False)
+        return self._execute_get("offset_limits", chassis, slot, device)  # type: ignore[return-value]
 
     def get_limits(
         self, chassis: int = 0, slot: int = 0, device: int = 0
@@ -1466,9 +1876,7 @@ class CoBrite:
             - `offset_range` (`float`): Symmetric offset limit in GHz.
             - `pow_min`, `pow_max` (`float`): Power range in dBm.
         """
-        return self._cmd_csd(
-            "LIM? {csd}", chassis, slot, device, ret_type=_parse_limits, wait=False
-        )
+        return self._execute_get("limits", chassis, slot, device)  # type: ignore[return-value]
 
     def get_config(
         self, chassis: int = 0, slot: int = 0, device: int = 0
@@ -1493,17 +1901,45 @@ class CoBrite:
             - `busy` (`bool`): Tuning in progress.
             - `dither` (`int`): Dither state (`1` = on, `0` = off, `-1` = not supported).
         """
-        return self._cmd_csd(
-            "CONF? {csd}", chassis, slot, device, ret_type=_parse_config_str, wait=False
-        )
+        return self._execute_get("config", chassis, slot, device)  # type: ignore[return-value]
 
+    @overload
     def set_config(
         self,
         frequency: float,
-        offset: float,
-        power: float,
-        state: bool,
-        dither: int,
+        /,
+        offset: float = ...,
+        power: float = ...,
+        state: bool = ...,
+        dither: int = ...,
+        *,
+        chassis: int = ...,
+        slot: int = ...,
+        device: int = ...,
+        wait: bool = ...,
+    ) -> None: ...
+
+    @overload
+    def set_config(
+        self,
+        config: dict[str, float | bool | int],
+        /,
+        *,
+        chassis: int = ...,
+        slot: int = ...,
+        device: int = ...,
+        wait: bool = ...,
+    ) -> None: ...
+
+    def set_config(
+        self,
+        frequency_or_config: float | dict[str, float | bool | int],
+        /,
+        offset: float = 0.0,
+        power: float = 0.0,
+        state: bool = False,
+        dither: int = 0,
+        *,
         chassis: int = 0,
         slot: int = 0,
         device: int = 0,
@@ -1513,17 +1949,24 @@ class CoBrite:
 
         Property equivalent: [`laser_config`][cobrite.CoBrite.laser_config].
 
+        Accepts either five scalar parameters or a config dict (as returned by
+        `get_config`).  The dict form ignores the read-only `"busy"` key.
+
         Args:
-            frequency: Target frequency in THz.
-            offset: Frequency offset in GHz.
-            power: Target output power in dBm.
-            state: `True` to enable the laser.
-            dither: Dither state (`1` = on, `0` = off, `-1` = not supported).
+            frequency_or_config: Target frequency in THz, or a config dict with
+                keys ``frequency``, ``offset``, ``power``, ``state``, ``dither``.
+            offset: Frequency offset in GHz. Ignored when a dict is passed.
+            power: Target output power in dBm. Ignored when a dict is passed.
+            state: `True` to enable the laser. Ignored when a dict is passed.
+            dither: Dither state (`1` = on, `0` = off, `-1` = not supported). Ignored when a dict is passed.
             chassis: Chassis number, or `0` for all.
             slot: Slot number, or `0` for all.
             device: Device number, or `0` for all.
             wait: When `True`, poll `BUSY?` until tuning completes.
         """
+        frequency, offset, power, state, dither = _unpack_config(
+            frequency_or_config, offset, power, state, dither
+        )
         self._cmd_csd(
             "CONF {csd},{frequency},{offset},{power},{state},{dither}",
             chassis,
@@ -1558,9 +2001,7 @@ class CoBrite:
             - `ld_current_ma` (`float`): Laser diode drive current in mA.
             - `tec_current_ma` (`float`): TEC current in mA.
         """
-        return self._cmd_csd(
-            "MON? {csd}", chassis, slot, device, ret_type=_parse_monitor, wait=False
-        )
+        return self._execute_get("monitor", chassis, slot, device)  # type: ignore[return-value]
 
     def get_dither(
         self, chassis: int = 0, slot: int = 0, device: int = 0
@@ -1577,9 +2018,7 @@ class CoBrite:
         Returns:
             Tuple of `(chassis, slot, device, dither_enabled)` per matched port.
         """
-        return self._cmd_csd(
-            "DIT? {csd}", chassis, slot, device, ret_type=lambda x: bool(int(x)), wait=False
-        )
+        return self._execute_get("dither", chassis, slot, device)  # type: ignore[return-value]
 
     def set_dither(
         self,
@@ -1600,7 +2039,7 @@ class CoBrite:
             device: Device number, or `0` for all.
             wait: When `True`, poll `BUSY?` until operation completes.
         """
-        self._cmd_csd("DIT {csd},{v}", chassis, slot, device, v=int(enable), wait=wait)
+        self._execute_set("dither", enable, chassis, slot, device, wait=wait)
 
     def get_laser_alarm(
         self, chassis: int = 0, slot: int = 0, device: int = 0
@@ -1618,7 +2057,7 @@ class CoBrite:
             Tuple of `(chassis, slot, device, alarm_code)` per matched port.
             `0` means no alarm.
         """
-        return self._cmd_csd("LALAR? {csd}", chassis, slot, device, ret_type=int, wait=False)
+        return self._execute_get("laser_alarm", chassis, slot, device)  # type: ignore[return-value]
 
     def busy_wait(self, chassis: int = 0, slot: int = 0, device: int = 0) -> None:
         """Send a server-side blocking wait command (`BWAI`).
@@ -1649,9 +2088,7 @@ class CoBrite:
         Returns:
             Tuple of `(chassis, slot, device, active)` per matched port.
         """
-        return self._cmd_csd(
-            "TRIOUTACT? {csd}", chassis, slot, device, ret_type=lambda x: bool(int(x)), wait=False
-        )
+        return self._execute_get("trigger_out_active", chassis, slot, device)  # type: ignore[return-value]
 
     def get_trigger_config(
         self, chassis: int = 0, slot: int = 0, device: int = 0
@@ -1671,9 +2108,7 @@ class CoBrite:
             Tuple of `(chassis, slot, device, config)` per matched port.
             See [`get_config`][cobrite.CoBrite.get_config] for the dict key descriptions.
         """
-        return self._cmd_csd(
-            "TRICONF? {csd}", chassis, slot, device, ret_type=_parse_config_str, wait=False
-        )
+        return self._execute_get("trigger_config", chassis, slot, device)  # type: ignore[return-value]
 
     # -------------------------------------------------------------------------
     # Level-1 system commands
@@ -1947,16 +2382,46 @@ class CoBrite:
             device: Device number, or `0` for all.
             wait: When `True`, poll `BUSY?` until operation completes.
         """
-        self._cmd_csd("TRIOUTACT {csd},{v}", chassis, slot, device, v=int(active), wait=wait)
+        self._execute_set("trigger_out_active", active, chassis, slot, device, wait=wait)
+
+    @overload
+    def set_trigger_config(
+        self,
+        frequency: float,
+        /,
+        offset: float = ...,
+        power: float = ...,
+        state: bool = ...,
+        dither: int = ...,
+        *,
+        chassis: int = ...,
+        slot: int = ...,
+        device: int = ...,
+        wait: bool = ...,
+    ) -> None: ...
+
+    @overload
+    def set_trigger_config(
+        self,
+        config: dict[str, float | bool | int],
+        /,
+        *,
+        chassis: int = ...,
+        slot: int = ...,
+        device: int = ...,
+        wait: bool = ...,
+    ) -> None: ...
 
     @requires_level(1)
     def set_trigger_config(
         self,
-        frequency: float,
-        offset: float,
-        power: float,
-        state: bool,
-        dither: int,
+        frequency_or_config: float | dict[str, float | bool | int],
+        /,
+        offset: float = 0.0,
+        power: float = 0.0,
+        state: bool = False,
+        dither: int = 0,
+        *,
         chassis: int = 0,
         slot: int = 0,
         device: int = 0,
@@ -1966,19 +2431,22 @@ class CoBrite:
 
         Property equivalent: [`trigger_config`][cobrite.CoBrite.trigger_config].
         Parameters have the same meaning as [`set_config`][cobrite.CoBrite.set_config].
-        Requires level 1.
+        Accepts either five scalar parameters or a config dict. Requires level 1.
 
         Args:
-            frequency: Target frequency in THz.
-            offset: Frequency offset in GHz.
-            power: Target output power in dBm.
-            state: `True` to enable the laser on trigger.
-            dither: Dither state (`1` = on, `0` = off, `-1` = not supported).
+            frequency_or_config: Target frequency in THz, or a config dict.
+            offset: Frequency offset in GHz. Ignored when a dict is passed.
+            power: Target output power in dBm. Ignored when a dict is passed.
+            state: `True` to enable the laser on trigger. Ignored when a dict is passed.
+            dither: Dither state (`1` = on, `0` = off, `-1` = not supported). Ignored when a dict is passed.
             chassis: Chassis number, or `0` for all.
             slot: Slot number, or `0` for all.
             device: Device number, or `0` for all.
             wait: When `True`, poll `BUSY?` until operation completes.
         """
+        frequency, offset, power, state, dither = _unpack_config(
+            frequency_or_config, offset, power, state, dither
+        )
         self._cmd_csd(
             "TRICONF {csd},{frequency},{offset},{power},{state},{dither}",
             chassis,
@@ -2006,13 +2474,11 @@ class CoBrite:
         Raises:
             RuntimeError: If no active port has been set.
         """
-        c, s, d = self._require_active_port()
-        return self.get_wavelength(c, s, d)[0][-1]
+        return self._require_active_port().wavelength
 
     @wavelength.setter
     def wavelength(self, value: float) -> None:
-        c, s, d = self._require_active_port()
-        self.set_wavelength(value, c, s, d)
+        self._require_active_port().wavelength = value
 
     @property
     def wavelength_limits(self) -> dict[str, float]:
@@ -2023,8 +2489,7 @@ class CoBrite:
         Raises:
             RuntimeError: If no active port has been set.
         """
-        c, s, d = self._require_active_port()
-        return self.get_wavelength_limits(c, s, d)[0][-1]
+        return self._require_active_port().wavelength_limits
 
     @property
     def frequency(self) -> float:
@@ -2036,13 +2501,11 @@ class CoBrite:
         Raises:
             RuntimeError: If no active port has been set.
         """
-        c, s, d = self._require_active_port()
-        return self.get_frequency(c, s, d)[0][-1]
+        return self._require_active_port().frequency
 
     @frequency.setter
     def frequency(self, value: float) -> None:
-        c, s, d = self._require_active_port()
-        self.set_frequency(value, c, s, d)
+        self._require_active_port().frequency = value
 
     @property
     def frequency_limits(self) -> dict[str, float]:
@@ -2053,8 +2516,7 @@ class CoBrite:
         Raises:
             RuntimeError: If no active port has been set.
         """
-        c, s, d = self._require_active_port()
-        return self.get_frequency_limits(c, s, d)[0][-1]
+        return self._require_active_port().frequency_limits
 
     @property
     def power(self) -> float:
@@ -2067,13 +2529,11 @@ class CoBrite:
         Raises:
             RuntimeError: If no active port has been set.
         """
-        c, s, d = self._require_active_port()
-        return self.get_power(c, s, d)[0][-1]
+        return self._require_active_port().power
 
     @power.setter
     def power(self, value: float) -> None:
-        c, s, d = self._require_active_port()
-        self.set_power(value, c, s, d)
+        self._require_active_port().power = value
 
     @property
     def actual_power(self) -> float:
@@ -2084,8 +2544,7 @@ class CoBrite:
         Raises:
             RuntimeError: If no active port has been set.
         """
-        c, s, d = self._require_active_port()
-        return self.get_actual_power(c, s, d)[0][-1]
+        return self._require_active_port().actual_power
 
     @property
     def power_limits(self) -> dict[str, float]:
@@ -2096,8 +2555,7 @@ class CoBrite:
         Raises:
             RuntimeError: If no active port has been set.
         """
-        c, s, d = self._require_active_port()
-        return self.get_power_limits(c, s, d)[0][-1]
+        return self._require_active_port().power_limits
 
     @property
     def offset(self) -> float:
@@ -2109,13 +2567,11 @@ class CoBrite:
         Raises:
             RuntimeError: If no active port has been set.
         """
-        c, s, d = self._require_active_port()
-        return self.get_offset(c, s, d)[0][-1]
+        return self._require_active_port().offset
 
     @offset.setter
     def offset(self, value: float) -> None:
-        c, s, d = self._require_active_port()
-        self.set_offset(value, c, s, d)
+        self._require_active_port().offset = value
 
     @property
     def offset_limits(self) -> float:
@@ -2127,8 +2583,7 @@ class CoBrite:
         Raises:
             RuntimeError: If no active port has been set.
         """
-        c, s, d = self._require_active_port()
-        return self.get_offset_limits(c, s, d)[0][-1]
+        return self._require_active_port().offset_limits
 
     @property
     def limits(self) -> dict[str, float]:
@@ -2141,8 +2596,7 @@ class CoBrite:
         Raises:
             RuntimeError: If no active port has been set.
         """
-        c, s, d = self._require_active_port()
-        return self.get_limits(c, s, d)[0][-1]
+        return self._require_active_port().limits
 
     @property
     def state(self) -> bool:
@@ -2154,13 +2608,11 @@ class CoBrite:
         Raises:
             RuntimeError: If no active port has been set.
         """
-        c, s, d = self._require_active_port()
-        return self.get_state(c, s, d)[0][-1]
+        return self._require_active_port().state
 
     @state.setter
     def state(self, value: bool) -> None:
-        c, s, d = self._require_active_port()
-        self.set_state(value, c, s, d)
+        self._require_active_port().state = value
 
     @property
     def dither(self) -> bool:
@@ -2172,13 +2624,11 @@ class CoBrite:
         Raises:
             RuntimeError: If no active port has been set.
         """
-        c, s, d = self._require_active_port()
-        return self.get_dither(c, s, d)[0][-1]
+        return self._require_active_port().dither
 
     @dither.setter
     def dither(self, value: bool) -> None:
-        c, s, d = self._require_active_port()
-        self.set_dither(value, c, s, d)
+        self._require_active_port().dither = value
 
     @property
     def laser_alarm(self) -> int:
@@ -2189,8 +2639,7 @@ class CoBrite:
         Raises:
             RuntimeError: If no active port has been set.
         """
-        c, s, d = self._require_active_port()
-        return self.get_laser_alarm(c, s, d)[0][-1]
+        return self._require_active_port().laser_alarm
 
     @property
     def laser_config(self) -> dict[str, float | bool | int]:
@@ -2204,22 +2653,11 @@ class CoBrite:
         Raises:
             RuntimeError: If no active port has been set.
         """
-        c, s, d = self._require_active_port()
-        return self.get_config(c, s, d)[0][-1]
+        return self._require_active_port().laser_config
 
     @laser_config.setter
     def laser_config(self, value: dict[str, float | bool | int]) -> None:
-        c, s, d = self._require_active_port()
-        self.set_config(
-            float(value["frequency"]),
-            float(value["offset"]),
-            float(value["power"]),
-            bool(value["state"]),
-            int(value["dither"]),
-            c,
-            s,
-            d,
-        )
+        self._require_active_port().laser_config = value
 
     @property
     def monitor(self) -> dict[str, float]:
@@ -2232,8 +2670,7 @@ class CoBrite:
         Raises:
             RuntimeError: If no active port has been set.
         """
-        c, s, d = self._require_active_port()
-        return self.get_monitor(c, s, d)[0][-1]
+        return self._require_active_port().monitor
 
     @property
     def trigger_out_active(self) -> bool:
@@ -2245,13 +2682,11 @@ class CoBrite:
         Raises:
             RuntimeError: If no active port has been set.
         """
-        c, s, d = self._require_active_port()
-        return self.get_trigger_out_active(c, s, d)[0][-1]
+        return self._require_active_port().trigger_out_active
 
     @trigger_out_active.setter
     def trigger_out_active(self, value: bool) -> None:
-        c, s, d = self._require_active_port()
-        self.set_trigger_out_active(value, c, s, d)
+        self._require_active_port().trigger_out_active = value
 
     @property
     def trigger_config(self) -> dict[str, float | bool | int]:
@@ -2265,22 +2700,11 @@ class CoBrite:
         Raises:
             RuntimeError: If no active port has been set.
         """
-        c, s, d = self._require_active_port()
-        return self.get_trigger_config(c, s, d)[0][-1]
+        return self._require_active_port().trigger_config
 
     @trigger_config.setter
     def trigger_config(self, value: dict[str, float | bool | int]) -> None:
-        c, s, d = self._require_active_port()
-        self.set_trigger_config(
-            float(value["frequency"]),
-            float(value["offset"]),
-            float(value["power"]),
-            bool(value["state"]),
-            int(value["dither"]),
-            c,
-            s,
-            d,
-        )
+        self._require_active_port().trigger_config = value
 
 
 def main() -> None:  # pragma: no cover
