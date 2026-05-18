@@ -14,7 +14,7 @@ uv add cobrite
 ```python
 from cobrite import CoBrite
 
-cb = CoBrite(address="192.168.1.99", port=2000, timeout=20)
+cb = CoBrite(address="192.168.1.99", tcp_port=2000, timeout=20)
 cb.open()
 
 print(cb.idn())
@@ -35,7 +35,7 @@ cb.close()
 ```python
 CoBrite(
     address="cobrite.local",  # hostname or IP
-    port=2000,
+    tcp_port=2000,
     timeout=10,               # seconds; must exceed laser tuning time
     max_retries=3,            # parse retries per response
     open=False,               # True to call open() immediately
@@ -45,7 +45,7 @@ CoBrite(
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `address` | `str` | `"cobrite.local"` | Hostname or IP address of the unit. |
-| `port` | `int` | `2000` | TCP port exposed by the unit. |
+| `tcp_port` | `int` | `2000` | TCP port exposed by the unit. |
 | `timeout` | `int` | `10` | Socket timeout in seconds. Must exceed the longest laser tuning time (typically 10–30 s). |
 | `max_retries` | `int` | `3` | Retries on a malformed response before raising `RuntimeError`. |
 | `open` | `bool` | `False` | Call `open()` immediately after construction. |
@@ -95,24 +95,32 @@ mon = cb.get_monitor(1, 1, 1)[0][-1]
 # {'ld_chip_temp': ..., 'base_temp': ..., 'ld_current_ma': ..., 'tec_current_ma': ...}
 ```
 
-### Active port + property style
+### LaserPort style
 
-Select a port once with `set_active_port()`, then use Python properties.
+`cb.port(chassis, slot, device)` returns a [`LaserPort`][cobrite.LaserPort]
+bound to that address.  It exposes the same properties as a scalar API —
+no `[0][-1]` indexing, no shared state.  Use it directly or as a context
+manager.
 
 ```python
-cb.set_active_port(1, 1, 1)
+port = cb.port(1, 1, 1)
 
-cb.wavelength = 1550.0
-cb.power = 11.0
-cb.offset = 0.0
-cb.state = True
+port.wavelength = 1550.0
+port.power = 11.0
+port.offset = 0.0
+port.state = True
 cb.busy_wait(1, 1, 1)
 
-print(cb.wavelength)       # float, nm
-print(cb.frequency)        # float, THz
-print(cb.actual_power)     # measured output, dBm
-print(cb.monitor)          # dict with thermal and current readings
-print(cb.laser_alarm)      # int alarm code
+print(port.wavelength)       # float, nm
+print(port.frequency)        # float, THz
+print(port.actual_power)     # measured output, dBm
+print(port.monitor)          # dict with thermal and current readings
+print(port.laser_alarm)      # int alarm code
+
+# Context manager — port is a plain value; no save/restore side-effects
+with cb.port(1, 1, 1) as port:
+    port.state = True
+    cb.busy_wait(1, 1, 1)
 ```
 
 Read-only properties: `actual_power`, `wavelength_limits`, `frequency_limits`, `power_limits`, `offset_limits`, `limits`, `monitor`, `laser_alarm`.
@@ -134,8 +142,9 @@ cb.set_config(
     chassis=1, slot=1, device=1,
 )
 
-# Property (active port must be set first)
-cb.laser_config = {
+# LaserPort property
+port = cb.port(1, 1, 1)
+port.laser_config = {
     "frequency": 193.1,
     "offset": 0.0,
     "power": 11.0,

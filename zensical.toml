@@ -2,6 +2,7 @@
 nav = [
     {CoBrite = "index.md"},
     {API = "api.md"},
+    {"LaserPort Migration" = "LaserPort_migration.md"},
     {Development = "development.md"},
 ]
 site_name = "CoBrite"
