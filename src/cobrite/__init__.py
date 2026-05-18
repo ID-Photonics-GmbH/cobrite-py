@@ -1,3 +1,3 @@
-from .cobrite import CoBrite, CoBriteError, ScpiStatus, Transport
+from .cobrite import CoBrite, CoBriteError, LaserPort, ScpiStatus, Transport
 
-__all__ = ("CoBrite", "CoBriteError", "ScpiStatus", "Transport")
+__all__ = ("CoBrite", "CoBriteError", "LaserPort", "ScpiStatus", "Transport")
