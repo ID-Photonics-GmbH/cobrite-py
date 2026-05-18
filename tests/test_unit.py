@@ -1,15 +1,14 @@
 """Unit tests — always run via FakeTransport, no hardware required."""
 
+import warnings
 from unittest.mock import patch
 
 import pytest
+from conftest import AUTH, BUSY_1x1x1, BUSY_1x1x3, OPEN_1x1x1, OPEN_1x1x3, make_cb
 
 from cobrite import CoBrite, CoBriteError
 from cobrite._testing import FakeTransport
-from cobrite.cobrite import _split_n
-
-from conftest import AUTH, BUSY_1x1x1, BUSY_1x1x3, OPEN_1x1x1, OPEN_1x1x3, make_cb
-
+from cobrite.cobrite import _parse_layout_response, _split_n
 
 # ── connection / connect_guard ───────────────────────────────────────────
 
@@ -43,6 +42,21 @@ def test_open_true_in_init() -> None:
 def test_close_disable_true_disables_ports() -> None:
     cb = make_cb({**OPEN_1x1x1, **BUSY_1x1x1, "STAT 1,1,1,0": "OK"})
     cb.close(disable=True)
+    assert cb._connected is False
+
+
+def test_close_still_cleans_up_when_set_state_fails() -> None:
+    cb = make_cb(OPEN_1x1x1)  # no STAT response — set_state will raise
+    cb.close(disable=True)    # must not raise; transport must be cleaned up
+    assert cb._connected is False
+    assert cb._transport is None
+
+
+def test_context_manager() -> None:
+    responses = {**OPEN_1x1x1, **BUSY_1x1x1, "STAT 1,1,1,0": "OK"}
+    transport = FakeTransport(responses)
+    with CoBrite(_transport=transport) as cb:
+        assert cb._connected is True
     assert cb._connected is False
 
 
@@ -190,7 +204,7 @@ def test_format_layout_reloads_when_layout_none() -> None:
     cb.close(disable=False)
 
 def test_full_info_reloads_when_layout_none() -> None:
-    responses = {**OPEN_1x1x1, "*IDN?": "CoBrite", "POW? 1,1,1": "3.0", "FREQ? 1,1,1": "193.4", "WAV? 1,1,1": "1550.0", "STAT? 1,1,1": "1"}
+    responses = {**OPEN_1x1x1, "*IDN?": "CoBrite", "CONF? 1,1,1": "193.4,0.0,3.0,1,0,0"}
     cb = make_cb(responses)
     cb._layout = None  # type: ignore[assignment]
     s = cb.full_info()
@@ -213,6 +227,30 @@ def test_device_count_reloads_when_layout_none() -> None:
     cb = make_cb(OPEN_1x1x1)
     cb._layout = None  # type: ignore[assignment]
     assert cb._device_count(1, 1) == 1
+    cb.close(disable=False)
+
+
+def test_parse_layout_response_too_few_fields() -> None:
+    with pytest.raises(ValueError, match="expected ≥4"):
+        _parse_layout_response("only,three,fields")
+
+
+def test_parse_layout_response_non_integer_chassis() -> None:
+    with pytest.raises(ValueError, match="non-integer chassis/slot"):
+        _parse_layout_response("X,notint,1,DEV1")
+
+
+def test_parse_layout_response_bad_device_count() -> None:
+    with pytest.raises(ValueError, match="cannot parse device count"):
+        _parse_layout_response("X,1,1,DEVbad")
+
+
+def test_layout_raises_cobrite_error_on_bad_response() -> None:
+    cb = make_cb({**OPEN_1x1x1})
+    cb._transport._responses["LAY?"] = "malformed"  # type: ignore[union-attr]
+    cb._layout = None  # type: ignore[assignment]
+    with pytest.raises(CoBriteError):
+        cb.layout()
     cb.close(disable=False)
 
 
@@ -354,6 +392,20 @@ def test_set_state() -> None:
     cb.close(disable=False)
 
 
+def test_set_state_no_arg_warns() -> None:
+    cb = make_cb({**OPEN_1x1x1, **BUSY_1x1x1, "STAT 1,1,1,0": "OK"})
+    with pytest.warns(UserWarning, match="explicit state argument"):
+        cb.set_state()
+    cb.close(disable=False)
+
+
+def test_close_disable_does_not_warn() -> None:
+    cb = make_cb({**OPEN_1x1x1, **BUSY_1x1x1, "STAT 1,1,1,0": "OK"})
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        cb.close(disable=True)
+
+
 def test_get_offset() -> None:
     cb = make_cb({**OPEN_1x1x1, "OFF? 1,1,1": "0.5"})
     result = cb.get_offset(1, 1, 1)
@@ -492,71 +544,80 @@ def test_retry_exhausted_raises() -> None:
 
 def test_property_requires_active_port() -> None:
     cb = make_cb(OPEN_1x1x1)
-    with pytest.raises(RuntimeError, match="No active port"):
+    with pytest.warns(DeprecationWarning), pytest.raises(RuntimeError, match="No active port"):
         _ = cb.wavelength
     cb.close(disable=False)
 
 
 def test_wavelength_property_get() -> None:
     cb = make_cb({**OPEN_1x1x1, "WAV? 1,1,1": "1550.0"})
-    cb.set_active_port(1, 1, 1)
-    assert cb.wavelength == 1550.0
+    with pytest.warns(DeprecationWarning):
+        cb.set_active_port(1, 1, 1)
+        assert cb.wavelength == 1550.0
     cb.close(disable=False)
 
 
 def test_wavelength_property_set() -> None:
     cb = make_cb({**OPEN_1x1x1, **BUSY_1x1x1, "WAV 1,1,1,1550.0": "OK"})
-    cb.set_active_port(1, 1, 1)
-    cb.wavelength = 1550.0
+    with pytest.warns(DeprecationWarning):
+        cb.set_active_port(1, 1, 1)
+        cb.wavelength = 1550.0
     cb.close(disable=False)
 
 
 def test_frequency_property() -> None:
     cb = make_cb({**OPEN_1x1x1, "FREQ? 1,1,1": "193.4"})
-    cb.set_active_port(1, 1, 1)
-    assert cb.frequency == 193.4
+    with pytest.warns(DeprecationWarning):
+        cb.set_active_port(1, 1, 1)
+        assert cb.frequency == 193.4
     cb.close(disable=False)
 
 
 def test_power_property() -> None:
     cb = make_cb({**OPEN_1x1x1, "POW? 1,1,1": "3.0"})
-    cb.set_active_port(1, 1, 1)
-    assert cb.power == 3.0
+    with pytest.warns(DeprecationWarning):
+        cb.set_active_port(1, 1, 1)
+        assert cb.power == 3.0
     cb.close(disable=False)
 
 
 def test_actual_power_property() -> None:
     cb = make_cb({**OPEN_1x1x1, "APOW? 1,1,1": "2.9"})
-    cb.set_active_port(1, 1, 1)
-    assert cb.actual_power == 2.9
+    with pytest.warns(DeprecationWarning):
+        cb.set_active_port(1, 1, 1)
+        assert cb.actual_power == 2.9
     cb.close(disable=False)
 
 
 def test_state_property() -> None:
     cb = make_cb({**OPEN_1x1x1, "STAT? 1,1,1": "0"})
-    cb.set_active_port(1, 1, 1)
-    assert cb.state is False
+    with pytest.warns(DeprecationWarning):
+        cb.set_active_port(1, 1, 1)
+        assert cb.state is False
     cb.close(disable=False)
 
 
 def test_offset_property() -> None:
     cb = make_cb({**OPEN_1x1x1, "OFF? 1,1,1": "1.5"})
-    cb.set_active_port(1, 1, 1)
-    assert cb.offset == 1.5
+    with pytest.warns(DeprecationWarning):
+        cb.set_active_port(1, 1, 1)
+        assert cb.offset == 1.5
     cb.close(disable=False)
 
 
 def test_dither_property() -> None:
     cb = make_cb({**OPEN_1x1x1, "DIT? 1,1,1": "1"})
-    cb.set_active_port(1, 1, 1)
-    assert cb.dither is True
+    with pytest.warns(DeprecationWarning):
+        cb.set_active_port(1, 1, 1)
+        assert cb.dither is True
     cb.close(disable=False)
 
 
 def test_laser_config_property() -> None:
     cb = make_cb({**OPEN_1x1x1, "CONF? 1,1,1": "193.4,0.0,3.0,1,0,0"})
-    cb.set_active_port(1, 1, 1)
-    cfg = cb.laser_config
+    with pytest.warns(DeprecationWarning):
+        cb.set_active_port(1, 1, 1)
+        cfg = cb.laser_config
     assert cfg["frequency"] == 193.4
     assert cfg["state"] is True
     cb.close(disable=False)
@@ -564,17 +625,43 @@ def test_laser_config_property() -> None:
 
 def test_monitor_property() -> None:
     cb = make_cb({**OPEN_1x1x1, "MON? 1,1,1": "25.1,22.5,100.0,50.0"})
-    cb.set_active_port(1, 1, 1)
-    mon = cb.monitor
+    with pytest.warns(DeprecationWarning):
+        cb.set_active_port(1, 1, 1)
+        mon = cb.monitor
     assert mon["ld_chip_temp"] == 25.1
     cb.close(disable=False)
 
 
 def test_get_active_port() -> None:
     cb = make_cb(OPEN_1x1x1)
-    assert cb.get_active_port() is None
-    cb.set_active_port(1, 1, 1)
-    assert cb.get_active_port() == (1, 1, 1)
+    with pytest.warns(DeprecationWarning):
+        assert cb.get_active_port() is None
+        cb.set_active_port(1, 1, 1)
+        port = cb.get_active_port()
+    assert port is not None
+    assert (port.chassis, port.slot, port.device) == (1, 1, 1)
+    cb.close(disable=False)
+
+
+def test_laser_port_context_manager() -> None:
+    cb = make_cb({**OPEN_1x1x1, "WAV? 1,1,1": "1550.0"})
+    with cb.port(1, 1, 1) as port:
+        assert (port.chassis, port.slot, port.device) == (1, 1, 1)
+        assert port.wavelength == 1550.0
+    cb.close(disable=False)
+
+
+def test_laser_port_repr() -> None:
+    cb = make_cb(OPEN_1x1x1)
+    port = cb.port(1, 1, 1)
+    assert repr(port) == f"LaserPort({cb!r}, 1, 1, 1)"
+    cb.close(disable=False)
+
+
+def test_execute_set_read_only_raises() -> None:
+    cb = make_cb(OPEN_1x1x1)
+    with pytest.raises(AttributeError, match="read-only"):
+        cb._execute_set("wavelength_limits", 1550.0)
     cb.close(disable=False)
 
 
@@ -583,36 +670,41 @@ def test_get_active_port() -> None:
 
 def test_frequency_property_set() -> None:
     cb = make_cb({**OPEN_1x1x1, **BUSY_1x1x1, "FREQ 1,1,1,193.4": "OK"})
-    cb.set_active_port(1, 1, 1)
-    cb.frequency = 193.4
+    with pytest.warns(DeprecationWarning):
+        cb.set_active_port(1, 1, 1)
+        cb.frequency = 193.4
     cb.close(disable=False)
 
 
 def test_power_property_set() -> None:
     cb = make_cb({**OPEN_1x1x1, **BUSY_1x1x1, "POW 1,1,1,3.0": "OK"})
-    cb.set_active_port(1, 1, 1)
-    cb.power = 3.0
+    with pytest.warns(DeprecationWarning):
+        cb.set_active_port(1, 1, 1)
+        cb.power = 3.0
     cb.close(disable=False)
 
 
 def test_state_property_set() -> None:
     cb = make_cb({**OPEN_1x1x1, **BUSY_1x1x1, "STAT 1,1,1,1": "OK"})
-    cb.set_active_port(1, 1, 1)
-    cb.state = True
+    with pytest.warns(DeprecationWarning):
+        cb.set_active_port(1, 1, 1)
+        cb.state = True
     cb.close(disable=False)
 
 
 def test_offset_property_set() -> None:
     cb = make_cb({**OPEN_1x1x1, **BUSY_1x1x1, "OFF 1,1,1,1.0": "OK"})
-    cb.set_active_port(1, 1, 1)
-    cb.offset = 1.0
+    with pytest.warns(DeprecationWarning):
+        cb.set_active_port(1, 1, 1)
+        cb.offset = 1.0
     cb.close(disable=False)
 
 
 def test_dither_property_set() -> None:
     cb = make_cb({**OPEN_1x1x1, **BUSY_1x1x1, "DIT 1,1,1,1": "OK"})
-    cb.set_active_port(1, 1, 1)
-    cb.dither = True
+    with pytest.warns(DeprecationWarning):
+        cb.set_active_port(1, 1, 1)
+        cb.dither = True
     cb.close(disable=False)
 
 
@@ -622,16 +714,18 @@ def test_laser_config_property_set() -> None:
         **BUSY_1x1x1,
         "CONF 1,1,1,193.4,0.0,3.0,1,0": "OK",
     })
-    cb.set_active_port(1, 1, 1)
-    cb.laser_config = {"frequency": 193.4, "offset": 0.0, "power": 3.0, "state": True, "dither": 0}
+    with pytest.warns(DeprecationWarning):
+        cb.set_active_port(1, 1, 1)
+        cb.laser_config = {"frequency": 193.4, "offset": 0.0, "power": 3.0, "state": True, "dither": 0}
     cb.close(disable=False)
 
 
 def test_trigger_out_active_property_set() -> None:
     cb = make_cb({**OPEN_1x1x1, **BUSY_1x1x1, "TRIOUTACT 1,1,1,1": "OK"})
     cb._user_level = 1
-    cb.set_active_port(1, 1, 1)
-    cb.trigger_out_active = True
+    with pytest.warns(DeprecationWarning):
+        cb.set_active_port(1, 1, 1)
+        cb.trigger_out_active = True
     cb.close(disable=False)
 
 
@@ -642,8 +736,9 @@ def test_trigger_config_property_set() -> None:
         "TRICONF 1,1,1,193.4,0.0,3.0,1,0": "OK",
     })
     cb._user_level = 1
-    cb.set_active_port(1, 1, 1)
-    cb.trigger_config = {"frequency": 193.4, "offset": 0.0, "power": 3.0, "state": True, "dither": 0}
+    with pytest.warns(DeprecationWarning):
+        cb.set_active_port(1, 1, 1)
+        cb.trigger_config = {"frequency": 193.4, "offset": 0.0, "power": 3.0, "state": True, "dither": 0}
     cb.close(disable=False)
 
 
@@ -886,7 +981,19 @@ def test_get_trigger_config() -> None:
 
 def test_set_config() -> None:
     cb = make_cb({**OPEN_1x1x1, **BUSY_1x1x1, "CONF 1,1,1,193.4,0.0,3.0,1,0": "OK"})
-    cb.set_config(193.4, 0.0, 3.0, True, 0, 1, 1, 1)
+    cb.set_config(193.4, 0.0, 3.0, True, 0, chassis=1, slot=1, device=1)
+    cb.close(disable=False)
+
+
+def test_set_config_dict_form() -> None:
+    cb = make_cb({
+        **OPEN_1x1x1,
+        **BUSY_1x1x1,
+        "CONF? 1,1,1": "193.4,0.0,3.0,1,0,0",
+        "CONF 1,1,1,193.4,0.0,3.0,1,0": "OK",
+    })
+    cfg = cb.get_config(1, 1, 1)[0][-1]
+    cb.set_config(cfg, chassis=1, slot=1, device=1)
     cb.close(disable=False)
 
 
@@ -906,7 +1013,20 @@ def test_set_trigger_config() -> None:
         "TRICONF 1,1,1,193.4,0.0,3.0,0,0": "OK",
     })
     cb._user_level = 1
-    cb.set_trigger_config(193.4, 0.0, 3.0, False, 0, 1, 1, 1)
+    cb.set_trigger_config(193.4, 0.0, 3.0, False, 0, chassis=1, slot=1, device=1)
+    cb.close(disable=False)
+
+
+def test_set_trigger_config_dict_form() -> None:
+    cb = make_cb({
+        **OPEN_1x1x1,
+        **BUSY_1x1x1,
+        "TRICONF? 1,1,1": "193.4,0.0,3.0,0,0,0",
+        "TRICONF 1,1,1,193.4,0.0,3.0,0,0": "OK",
+    })
+    cb._user_level = 1
+    cfg = cb.get_trigger_config(1, 1, 1)[0][-1]
+    cb.set_trigger_config(cfg, chassis=1, slot=1, device=1)
     cb.close(disable=False)
 
 
@@ -1066,15 +1186,12 @@ def test_full_info() -> None:
     cb = make_cb({
         **OPEN_1x1x1,
         "*IDN?": "ID Photonics,CoBrite-DX,SN001,1.0",
-        "POW? 1,1,1": "3.0",
-        "FREQ? 1,1,1": "193.4",
-        "WAV? 1,1,1": "1550.0",
-        "STAT? 1,1,1": "1",
+        "CONF? 1,1,1": "193.4,0.0,3.0,1,0,0",
     })
     info = cb.full_info()
     assert "CoBrite" in info
     assert "193.4000 THz" in info
-    assert "1550.00 nm" in info
+    assert "1550.12 nm" in info
     assert "3.00 dBm" in info
     assert "ENABLED" in info
     cb.close(disable=False)
@@ -1177,8 +1294,9 @@ def test_get_power_limits() -> None:
 
 def test_wavelength_limits_property() -> None:
     cb = make_cb({**OPEN_1x1x1, "WAV:LIM? 1,1,1": "1528.77,1566.31"})
-    cb.set_active_port(1, 1, 1)
-    lim = cb.wavelength_limits
+    with pytest.warns(DeprecationWarning):
+        cb.set_active_port(1, 1, 1)
+        lim = cb.wavelength_limits
     assert lim["min"] == 1528.77
     assert lim["max"] == 1566.31
     cb.close(disable=False)
@@ -1186,8 +1304,9 @@ def test_wavelength_limits_property() -> None:
 
 def test_frequency_limits_property() -> None:
     cb = make_cb({**OPEN_1x1x1, "FREQ:LIM? 1,1,1": "191.5,196.25"})
-    cb.set_active_port(1, 1, 1)
-    lim = cb.frequency_limits
+    with pytest.warns(DeprecationWarning):
+        cb.set_active_port(1, 1, 1)
+        lim = cb.frequency_limits
     assert lim["min"] == 191.5
     assert lim["max"] == 196.25
     cb.close(disable=False)
@@ -1195,8 +1314,9 @@ def test_frequency_limits_property() -> None:
 
 def test_power_limits_property() -> None:
     cb = make_cb({**OPEN_1x1x1, "POW:LIM? 1,1,1": "0.0,13.0"})
-    cb.set_active_port(1, 1, 1)
-    lim = cb.power_limits
+    with pytest.warns(DeprecationWarning):
+        cb.set_active_port(1, 1, 1)
+        lim = cb.power_limits
     assert lim["min"] == 0.0
     assert lim["max"] == 13.0
     cb.close(disable=False)
@@ -1204,15 +1324,17 @@ def test_power_limits_property() -> None:
 
 def test_offset_limits_property() -> None:
     cb = make_cb({**OPEN_1x1x1, "OFF:LIM? 1,1,1": "3.0"})
-    cb.set_active_port(1, 1, 1)
-    assert cb.offset_limits == 3.0
+    with pytest.warns(DeprecationWarning):
+        cb.set_active_port(1, 1, 1)
+        assert cb.offset_limits == 3.0
     cb.close(disable=False)
 
 
 def test_limits_property() -> None:
     cb = make_cb({**OPEN_1x1x1, "LIM? 1,1,1": "191.5,196.25,3.0,0.0,13.0"})
-    cb.set_active_port(1, 1, 1)
-    lim = cb.limits
+    with pytest.warns(DeprecationWarning):
+        cb.set_active_port(1, 1, 1)
+        lim = cb.limits
     assert lim["freq_min"] == 191.5
     assert lim["pow_max"] == 13.0
     cb.close(disable=False)
@@ -1220,22 +1342,25 @@ def test_limits_property() -> None:
 
 def test_laser_alarm_property() -> None:
     cb = make_cb({**OPEN_1x1x1, "LALAR? 1,1,1": "0"})
-    cb.set_active_port(1, 1, 1)
-    assert cb.laser_alarm == 0
+    with pytest.warns(DeprecationWarning):
+        cb.set_active_port(1, 1, 1)
+        assert cb.laser_alarm == 0
     cb.close(disable=False)
 
 
 def test_trigger_out_active_property_get() -> None:
     cb = make_cb({**OPEN_1x1x1, "TRIOUTACT? 1,1,1": "1"})
-    cb.set_active_port(1, 1, 1)
-    assert cb.trigger_out_active is True
+    with pytest.warns(DeprecationWarning):
+        cb.set_active_port(1, 1, 1)
+        assert cb.trigger_out_active is True
     cb.close(disable=False)
 
 
 def test_trigger_config_property_get() -> None:
     cb = make_cb({**OPEN_1x1x1, "TRICONF? 1,1,1": "193.4,0.0,3.0,0,0,0"})
-    cb.set_active_port(1, 1, 1)
-    cfg = cb.trigger_config
+    with pytest.warns(DeprecationWarning):
+        cb.set_active_port(1, 1, 1)
+        cfg = cb.trigger_config
     assert cfg["frequency"] == 193.4
     assert cfg["state"] is False
     cb.close(disable=False)
