@@ -42,8 +42,6 @@ classifiers = [
 ]
 
 dependencies = [
-    "basedpyright>=1.39.3",
-    "mkdocstrings-python>=2.0.3",
     "pyvisa>=1.16.2",
 ]
 
@@ -60,7 +58,8 @@ dev = [
     "ruff>=0.15.1",
     "codespell>=2.4.1",
     "rich>=14.3.2",
-    "basedpyright>=1.38.0",
+    "basedpyright>=1.39.3",
+    "mkdocstrings-python>=2.0.3",
     "funlog>=0.2.1",
     "zensical>=0.0.37",
     "pytest>=8.0",
@@ -174,6 +173,7 @@ reportUnreachable = false
 [tool.pytest.ini_options]
 addopts = "--cov=cobrite --cov-report=term-missing --cov-report=xml"
 testpaths = ["tests"]
+filterwarnings = ["error::DeprecationWarning"]
 
 [tool.coverage.run]
 source = ["src/cobrite"]

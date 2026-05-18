@@ -30,8 +30,6 @@ wheels = [
 name = "cobrite"
 source = { editable = "." }
 dependencies = [
-    { name = "basedpyright" },
-    { name = "mkdocstrings-python" },
     { name = "pyvisa" },
 ]
 
@@ -40,6 +38,7 @@ dev = [
     { name = "basedpyright" },
     { name = "codespell" },
     { name = "funlog" },
+    { name = "mkdocstrings-python" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "rich" },
@@ -48,17 +47,14 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "basedpyright", specifier = ">=1.39.3" },
-    { name = "mkdocstrings-python", specifier = ">=2.0.3" },
-    { name = "pyvisa", specifier = ">=1.16.2" },
-]
+requires-dist = [{ name = "pyvisa", specifier = ">=1.16.2" }]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "basedpyright", specifier = ">=1.38.0" },
+    { name = "basedpyright", specifier = ">=1.39.3" },
     { name = "codespell", specifier = ">=2.4.1" },
     { name = "funlog", specifier = ">=0.2.1" },
+    { name = "mkdocstrings-python", specifier = ">=2.0.3" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-cov", specifier = ">=6.0" },
     { name = "rich", specifier = ">=14.3.2" },
