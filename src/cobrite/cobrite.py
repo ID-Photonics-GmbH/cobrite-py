@@ -5,6 +5,7 @@ import logging
 import re
 import socket
 import sys
+import time
 import warnings
 import webbrowser
 from collections.abc import Callable, Generator
@@ -21,12 +22,6 @@ else:
         return f
 
 
-from pyvisa import ResourceManager
-
-# from pyvisa.errors import VisaIOError
-from pyvisa.resources import MessageBasedResource
-
-
 class ScpiStatus(enum.IntEnum):
     """SCPI status codes returned by the device firmware (mirrors ``scpi_status_t``)."""
 
@@ -41,7 +36,26 @@ class ScpiStatus(enum.IntEnum):
 
 _ERR_RE = re.compile(r"^ERR\s*(\d+),\s*(.*)", re.DOTALL)
 
-_UNSET: bool = cast(bool, object())
+
+class _Unset:
+    """Singleton sentinel for omitted optional arguments."""
+
+    _instance: "None | _Unset" = None
+
+    def __new__(cls) -> "_Unset":
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    @override
+    def __repr__(self) -> str:
+        return "<UNSET>"
+
+    def __bool__(self) -> bool:
+        return False
+
+
+_UNSET = _Unset()
 
 
 class CoBriteError(RuntimeError):
@@ -117,8 +131,8 @@ class Transport(Protocol):
 class _VisaTransport:  # pragma: no cover
     """PyVISA adapter satisfying the Transport Protocol."""
 
-    def __init__(self, inst: MessageBasedResource) -> None:
-        self._inst: MessageBasedResource = inst
+    def __init__(self, inst: Any) -> None:
+        self._inst: Any = inst
 
     def query(self, command: str) -> str:
         return self._inst.query(command, delay=0.2).strip()
@@ -367,12 +381,16 @@ class LaserPort:
     chassis: int
     slot: int
     device: int
+    wait: bool
 
-    def __init__(self, cb: "CoBrite", chassis: int, slot: int, device: int) -> None:
+    def __init__(
+        self, cb: "CoBrite", chassis: int, slot: int, device: int, wait: bool = True
+    ) -> None:
         self._cb = cb
         self.chassis = chassis
         self.slot = slot
         self.device = device
+        self.wait = wait
 
     def __enter__(self) -> "LaserPort":
         return self
@@ -389,7 +407,7 @@ class LaserPort:
 
     @wavelength.setter
     def wavelength(self, value: float) -> None:
-        self._cb.set_wavelength(value, self.chassis, self.slot, self.device)
+        self._cb.set_wavelength(value, self.chassis, self.slot, self.device, wait=self.wait)
 
     @property
     def wavelength_limits(self) -> dict[str, float]:
@@ -403,7 +421,7 @@ class LaserPort:
 
     @frequency.setter
     def frequency(self, value: float) -> None:
-        self._cb.set_frequency(value, self.chassis, self.slot, self.device)
+        self._cb.set_frequency(value, self.chassis, self.slot, self.device, wait=self.wait)
 
     @property
     def frequency_limits(self) -> dict[str, float]:
@@ -417,7 +435,7 @@ class LaserPort:
 
     @power.setter
     def power(self, value: float) -> None:
-        self._cb.set_power(value, self.chassis, self.slot, self.device)
+        self._cb.set_power(value, self.chassis, self.slot, self.device, wait=self.wait)
 
     @property
     def actual_power(self) -> float:
@@ -436,11 +454,15 @@ class LaserPort:
 
     @offset.setter
     def offset(self, value: float) -> None:
-        self._cb.set_offset(value, self.chassis, self.slot, self.device)
+        self._cb.set_offset(value, self.chassis, self.slot, self.device, wait=self.wait)
 
     @property
     def offset_limits(self) -> float:
-        """Symmetric offset limit in GHz.  Allowed range is `[-offset_limits, +offset_limits]`."""
+        """Symmetric offset limit in GHz.  Allowed range is `[-offset_limits, +offset_limits]`.
+
+        Note: a future release will change the return type to `{"min": float, "max": float}`
+        to match all other `*_limits` properties.
+        """
         return self._cb.get_offset_limits(self.chassis, self.slot, self.device)[0][-1]
 
     @property
@@ -457,16 +479,20 @@ class LaserPort:
 
     @state.setter
     def state(self, value: bool) -> None:
-        self._cb.set_state(value, self.chassis, self.slot, self.device)
+        self._cb.set_state(value, self.chassis, self.slot, self.device, wait=self.wait)
 
     @property
     def dither(self) -> bool:
-        """Dither enable state."""
+        """Dither enable state.
+
+        `True` when dither is on (`1`) or when the hardware does not support
+        disabling it (`-1` — always-on).  `False` when dither is off (`0`).
+        """
         return self._cb.get_dither(self.chassis, self.slot, self.device)[0][-1]
 
     @dither.setter
     def dither(self, value: bool) -> None:
-        self._cb.set_dither(value, self.chassis, self.slot, self.device)
+        self._cb.set_dither(value, self.chassis, self.slot, self.device, wait=self.wait)
 
     @property
     def laser_alarm(self) -> int:
@@ -480,7 +506,9 @@ class LaserPort:
 
     @laser_config.setter
     def laser_config(self, value: dict[str, float | bool | int]) -> None:
-        self._cb.set_config(value, chassis=self.chassis, slot=self.slot, device=self.device)
+        self._cb.set_config(
+            value, chassis=self.chassis, slot=self.slot, device=self.device, wait=self.wait
+        )
 
     @property
     def monitor(self) -> dict[str, float]:
@@ -496,7 +524,7 @@ class LaserPort:
 
     @trigger_out_active.setter
     def trigger_out_active(self, value: bool) -> None:
-        self._cb.set_trigger_out_active(value, self.chassis, self.slot, self.device)
+        self._cb.set_trigger_out_active(value, self.chassis, self.slot, self.device, wait=self.wait)
 
     @property
     def trigger_config(self) -> dict[str, float | bool | int]:
@@ -505,7 +533,9 @@ class LaserPort:
 
     @trigger_config.setter
     def trigger_config(self, value: dict[str, float | bool | int]) -> None:
-        self._cb.set_trigger_config(value, chassis=self.chassis, slot=self.slot, device=self.device)
+        self._cb.set_trigger_config(
+            value, chassis=self.chassis, slot=self.slot, device=self.device, wait=self.wait
+        )
 
     @override
     def __repr__(self) -> str:
@@ -772,6 +802,8 @@ class CoBrite:
         if self._injected_transport is not None:
             self._transport = self._injected_transport
         else:  # pragma: no cover
+            from pyvisa import ResourceManager  # noqa: PLC0415
+
             ip = socket.gethostbyname(self.address)
             resource = f"TCPIP::{ip}::{self.tcp_port}::SOCKET"
             logger.info(f"Opening connection to {resource}")
@@ -782,7 +814,7 @@ class CoBrite:
                 write_termination=";",
                 timeout=self.timeout * 1000,
             )
-            self._transport = _VisaTransport(cast(MessageBasedResource, inst))
+            self._transport = _VisaTransport(inst)
         self._connected = True
         self.layout()
         self.init_interface()
@@ -826,9 +858,11 @@ class CoBrite:
         raise AssertionError("unreachable")  # pragma: no cover
 
     def write(self, command: str) -> None:
-        """Send a SCPI command and discard the response.
+        """Send a SCPI command and discard the return value.
 
-        Internally calls `query()`, so the same error checking applies.
+        Reads the device acknowledgement and checks it for errors, then
+        discards it.  This is a blocking round-trip — callers should not
+        assume fire-and-forget semantics.
 
         Args:
             command: SCPI command string (without terminator).
@@ -1096,6 +1130,7 @@ class CoBrite:
                 for c, s, d in ports
             ):
                 break
+            time.sleep(0.05)
 
     # -------------------------------------------------------------------------
     # Active port
@@ -1132,7 +1167,7 @@ class CoBrite:
         )
         return self._active_port
 
-    def port(self, chassis: int, slot: int, device: int) -> LaserPort:
+    def port(self, chassis: int, slot: int, device: int, wait: bool = True) -> LaserPort:
         """Return a `LaserPort` handle for the given port.
 
         `LaserPort` supports both direct property access and use as a context
@@ -1142,6 +1177,8 @@ class CoBrite:
             chassis: Chassis number (must be non-zero).
             slot: Slot number (must be non-zero).
             device: Device number (must be non-zero).
+            wait: Default `wait` behaviour for all property setters on this port.
+                When `False`, setters return immediately without polling `BUSY?`.
 
         Returns:
             A `LaserPort` bound to this controller and the given CSD address.
@@ -1155,9 +1192,13 @@ class CoBrite:
             # Context manager
             with cb.port(1, 1, 1) as port:
                 port.wavelength = 1550.0
+
+            # Fire-and-forget (no busy-wait)
+            port = cb.port(1, 1, 1, wait=False)
+            port.wavelength = 1550.0
             ```
         """
-        return LaserPort(self, chassis, slot, device)
+        return LaserPort(self, chassis, slot, device, wait=wait)
 
     def _require_active_port(self) -> LaserPort:
         warnings.warn(
@@ -1565,7 +1606,7 @@ class CoBrite:
 
     def set_state(
         self,
-        state: bool = _UNSET,
+        state: "bool | _Unset" = _UNSET,
         chassis: int = 0,
         slot: int = 0,
         device: int = 0,
@@ -1846,6 +1887,9 @@ class CoBrite:
         Property equivalent: [`offset_limits`][cobrite.CoBrite.offset_limits].
         The allowed offset range is `[-limit, +limit]`.
 
+        Note: a future release will change the return type to
+        `{"min": float, "max": float}` to match all other `*_limits` methods.
+
         Args:
             chassis: Chassis number, or `0` for all.
             slot: Slot number, or `0` for all.
@@ -2009,6 +2053,10 @@ class CoBrite:
         """Return the dither enable state (`DIT?`).
 
         Property equivalent: [`dither`][cobrite.CoBrite.dither].
+
+        The device can return three raw values: `1` (on), `0` (off), or `-1`
+        (hardware does not support disabling dither — always-on).  Both `1`
+        and `-1` map to `True`; `0` maps to `False`.
 
         Args:
             chassis: Chassis number, or `0` for all.
@@ -2580,6 +2628,8 @@ class CoBrite:
         CSD equivalent: [`get_offset_limits`][cobrite.CoBrite.get_offset_limits].
         The allowed range is `[-offset_limits, +offset_limits]`.
 
+        Note: a future release will change the return type to `{"min": float, "max": float}`.
+
         Raises:
             RuntimeError: If no active port has been set.
         """
@@ -2615,7 +2665,7 @@ class CoBrite:
         self._require_active_port().state = value
 
     @property
-    def dither(self) -> bool:
+    def dither(self) -> int:
         """Dither enable state of the active port.
 
         CSD equivalents: [`get_dither`][cobrite.CoBrite.get_dither] /

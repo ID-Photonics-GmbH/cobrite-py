@@ -937,6 +937,14 @@ def test_get_dither() -> None:
     cb.close(disable=False)
 
 
+def test_get_dither_not_supported() -> None:
+    # -1 means hardware does not support disabling dither (always-on) -> True
+    cb = make_cb({**OPEN_1x1x1, "DIT? 1,1,1": "-1"})
+    result = cb.get_dither(1, 1, 1)
+    assert result == ((1, 1, 1, True),)
+    cb.close(disable=False)
+
+
 def test_set_dither() -> None:
     cb = make_cb({**OPEN_1x1x1, **BUSY_1x1x1, "DIT 1,1,1,0": "OK"})
     cb.set_dither(False, 1, 1, 1)
