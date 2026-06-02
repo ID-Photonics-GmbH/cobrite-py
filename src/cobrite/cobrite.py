@@ -398,6 +398,14 @@ class LaserPort:
     def __exit__(self, *_: object) -> None:
         pass
 
+    @property
+    def laser_type(self) -> str:
+        """Laser device type string from the layout, e.g. `"GC"`.
+
+        CSD equivalent: [`get_laser_type`][cobrite.CoBrite.get_laser_type].
+        """
+        return self._cb.get_laser_type(self.chassis, self.slot, self.device)
+
     # --- tuning parameters ---
 
     @property
@@ -1023,6 +1031,23 @@ class CoBrite:
                 for device_nr, device_type in devices.items():
                     lines.append(f"{' ' * indent * 2}Device {device_nr}: {device_type}")
         return "\n".join(lines)
+
+    def get_laser_type(self, chassis: int, slot: int, device: int) -> str:
+        """Return the laser device type string for a CSD address.
+
+        Values come from the cached layout populated by `layout()`, which reads
+        the device's `TYP? C,S,D` response for each discovered port.
+
+        Args:
+            chassis: Chassis number.
+            slot: Slot number.
+            device: Device number.
+
+        Returns:
+            Device type string, e.g. `"GC"`.
+        """
+        self._ensure_layout()
+        return self._layout[chassis][slot][device]
 
     def full_info(self, indent: int = 2) -> str:
         """Return identification, layout, and per-port laser state as a string.
@@ -2708,6 +2733,16 @@ class CoBrite:
     @laser_config.setter
     def laser_config(self, value: dict[str, float | bool | int]) -> None:
         self._require_active_port().laser_config = value
+
+    @property
+    def laser_type(self) -> str:
+        """Laser device type string from the layout, e.g. `"GC"`.
+
+        CSD equivalent: [`get_laser_type`][cobrite.CoBrite.get_laser_type].
+        Raises:
+            RuntimeError: If no active port has been set.
+        """
+        return self._require_active_port().laser_type
 
     @property
     def monitor(self) -> dict[str, float]:
