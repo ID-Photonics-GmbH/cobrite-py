@@ -411,7 +411,11 @@ class LaserPort:
 
     @property
     def wavelength(self) -> float:
-        """Target wavelength in nm."""
+        """Target wavelength in nm.
+
+        CSD equivalents: [`get_wavelength`][cobrite.CoBrite.get_wavelength] /
+        [`set_wavelength`][cobrite.CoBrite.set_wavelength].
+        """
         return self._cb.get_wavelength(self.chassis, self.slot, self.device)[0][-1]
 
     @wavelength.setter
@@ -420,12 +424,19 @@ class LaserPort:
 
     @property
     def wavelength_limits(self) -> dict[str, float]:
-        """Tunable wavelength range as `{"min": float, "max": float}` in nm."""
+        """Tunable wavelength range as `{"min": float, "max": float}` in nm.
+
+        CSD equivalent: [`get_wavelength_limits`][cobrite.CoBrite.get_wavelength_limits].
+        """
         return self._cb.get_wavelength_limits(self.chassis, self.slot, self.device)[0][-1]
 
     @property
     def frequency(self) -> float:
-        """Target frequency in THz."""
+        """Target frequency in THz.
+
+        CSD equivalents: [`get_frequency`][cobrite.CoBrite.get_frequency] /
+        [`set_frequency`][cobrite.CoBrite.set_frequency].
+        """
         return self._cb.get_frequency(self.chassis, self.slot, self.device)[0][-1]
 
     @frequency.setter
@@ -434,12 +445,20 @@ class LaserPort:
 
     @property
     def frequency_limits(self) -> dict[str, float]:
-        """Tunable frequency range as `{"min": float, "max": float}` in THz."""
+        """Tunable frequency range as `{"min": float, "max": float}` in THz.
+
+        CSD equivalent: [`get_frequency_limits`][cobrite.CoBrite.get_frequency_limits].
+        """
         return self._cb.get_frequency_limits(self.chassis, self.slot, self.device)[0][-1]
 
     @property
     def power(self) -> float:
-        """Target output power in dBm."""
+        """Target output power in dBm.
+
+        CSD equivalents: [`get_power`][cobrite.CoBrite.get_power] /
+        [`set_power`][cobrite.CoBrite.set_power].
+        For the actual measured power use [`actual_power`][cobrite.LaserPort.actual_power].
+        """
         return self._cb.get_power(self.chassis, self.slot, self.device)[0][-1]
 
     @power.setter
@@ -448,17 +467,27 @@ class LaserPort:
 
     @property
     def actual_power(self) -> float:
-        """Actual measured output power in dBm."""
+        """Actual measured output power in dBm.
+
+        CSD equivalent: [`get_actual_power`][cobrite.CoBrite.get_actual_power].
+        """
         return self._cb.get_actual_power(self.chassis, self.slot, self.device)[0][-1]
 
     @property
     def power_limits(self) -> dict[str, float]:
-        """Output power range as `{"min": float, "max": float}` in dBm."""
+        """Output power range as `{"min": float, "max": float}` in dBm.
+
+        CSD equivalent: [`get_power_limits`][cobrite.CoBrite.get_power_limits].
+        """
         return self._cb.get_power_limits(self.chassis, self.slot, self.device)[0][-1]
 
     @property
     def offset(self) -> float:
-        """Frequency offset in GHz."""
+        """Frequency offset in GHz.
+
+        CSD equivalents: [`get_offset`][cobrite.CoBrite.get_offset] /
+        [`set_offset`][cobrite.CoBrite.set_offset].
+        """
         return self._cb.get_offset(self.chassis, self.slot, self.device)[0][-1]
 
     @offset.setter
@@ -467,7 +496,10 @@ class LaserPort:
 
     @property
     def offset_limits(self) -> float:
-        """Symmetric offset limit in GHz.  Allowed range is `[-offset_limits, +offset_limits]`.
+        """Symmetric offset limit in GHz.
+
+        CSD equivalent: [`get_offset_limits`][cobrite.CoBrite.get_offset_limits].
+        The allowed range is `[-offset_limits, +offset_limits]`.
 
         Note: a future release will change the return type to `{"min": float, "max": float}`
         to match all other `*_limits` properties.
@@ -476,14 +508,23 @@ class LaserPort:
 
     @property
     def limits(self) -> dict[str, float]:
-        """All tuning limits.  Keys: `freq_min`, `freq_max` (THz), `offset_range` (GHz), `pow_min`, `pow_max` (dBm)."""
+        """All tuning limits.
+
+        CSD equivalent: [`get_limits`][cobrite.CoBrite.get_limits].
+        Keys: `freq_min`, `freq_max` (THz), `offset_range` (GHz),
+        `pow_min`, `pow_max` (dBm).
+        """
         return self._cb.get_limits(self.chassis, self.slot, self.device)[0][-1]
 
     # --- state / control ---
 
     @property
     def state(self) -> bool:
-        """Laser output enable state."""
+        """Laser output enable state.
+
+        CSD equivalents: [`get_state`][cobrite.CoBrite.get_state] /
+        [`set_state`][cobrite.CoBrite.set_state].
+        """
         return self._cb.get_state(self.chassis, self.slot, self.device)[0][-1]
 
     @state.setter
@@ -493,6 +534,9 @@ class LaserPort:
     @property
     def dither(self) -> bool:
         """Dither enable state.
+
+        CSD equivalents: [`get_dither`][cobrite.CoBrite.get_dither] /
+        [`set_dither`][cobrite.CoBrite.set_dither].
 
         `True` when dither is on (`1`) or when the hardware does not support
         disabling it (`-1` — always-on).  `False` when dither is off (`0`).
@@ -505,12 +549,20 @@ class LaserPort:
 
     @property
     def laser_alarm(self) -> int:
-        """Laser alarm code.  `0` = no alarm."""
+        """Laser alarm code.  `0` = no alarm.
+
+        CSD equivalent: [`get_laser_alarm`][cobrite.CoBrite.get_laser_alarm].
+        """
         return self._cb.get_laser_alarm(self.chassis, self.slot, self.device)[0][-1]
 
     @property
     def laser_config(self) -> dict[str, float | bool | int]:
-        """Full laser configuration.  Keys: `frequency`, `offset`, `power`, `state`, `busy`, `dither`."""
+        """Full laser configuration.
+
+        CSD equivalents: [`get_config`][cobrite.CoBrite.get_config] /
+        [`set_config`][cobrite.CoBrite.set_config].
+        Keys: `frequency`, `offset`, `power`, `state`, `busy`, `dither`.
+        """
         return self._cb.get_config(self.chassis, self.slot, self.device)[0][-1]
 
     @laser_config.setter
@@ -521,14 +573,22 @@ class LaserPort:
 
     @property
     def monitor(self) -> dict[str, float]:
-        """Thermal and current monitor readings.  Keys: `ld_chip_temp`, `base_temp`, `ld_current_ma`, `tec_current_ma`."""
+        """Thermal and current monitor readings.
+
+        CSD equivalent: [`get_monitor`][cobrite.CoBrite.get_monitor].
+        Keys: `ld_chip_temp`, `base_temp`, `ld_current_ma`, `tec_current_ma`.
+        """
         return self._cb.get_monitor(self.chassis, self.slot, self.device)[0][-1]
 
     # --- trigger ---
 
     @property
     def trigger_out_active(self) -> bool:
-        """Whether this port contributes to the hardware trigger output."""
+        """Whether this port contributes to the hardware trigger output.
+
+        CSD equivalents: [`get_trigger_out_active`][cobrite.CoBrite.get_trigger_out_active] /
+        [`set_trigger_out_active`][cobrite.CoBrite.set_trigger_out_active].
+        """
         return self._cb.get_trigger_out_active(self.chassis, self.slot, self.device)[0][-1]
 
     @trigger_out_active.setter
@@ -537,7 +597,13 @@ class LaserPort:
 
     @property
     def trigger_config(self) -> dict[str, float | bool | int]:
-        """Buffered trigger configuration.  Same keys as `laser_config`.  Applied on hardware trigger."""
+        """Buffered trigger configuration.
+
+        CSD equivalents: [`get_trigger_config`][cobrite.CoBrite.get_trigger_config] /
+        [`set_trigger_config`][cobrite.CoBrite.set_trigger_config].
+        Same keys as [`laser_config`][cobrite.LaserPort.laser_config].
+        Applied on hardware trigger.
+        """
         return self._cb.get_trigger_config(self.chassis, self.slot, self.device)[0][-1]
 
     @trigger_config.setter
@@ -2740,8 +2806,6 @@ class CoBrite:
         """Laser device type string from the layout, e.g. `"GC"`.
 
         CSD equivalent: [`get_laser_type`][cobrite.CoBrite.get_laser_type].
-        Raises:
-            RuntimeError: If no active port has been set.
         """
         return self._require_active_port().laser_type
 
