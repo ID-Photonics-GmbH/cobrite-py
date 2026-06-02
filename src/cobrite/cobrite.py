@@ -16,8 +16,7 @@ from typing import Any, Protocol, TypeVar, cast, overload
 
 if sys.version_info >= (3, 12):
     from typing import override  # pragma: no cover
-else:
-
+else:  # pragma: no cover
     def override(f: Any) -> Any:  # noqa: E302
         return f
 
