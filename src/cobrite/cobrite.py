@@ -32,9 +32,10 @@ class ScpiStatus(enum.IntEnum):
     COMMAND_ERROR_POWER_DOWN = 104
     EXEC_ERROR_UNAUTHORIZED = 201
     EXEC_ERROR_COMMLOCK = 204
+    ERROR_PARSE_FAILURE = -1
 
 
-_ERR_RE = re.compile(r"^ERR\s*(\d+),\s*(.*)", re.DOTALL)
+_ERR_RE = re.compile(r"^ERR\s*(-?\d+),\s*(.*)", re.DOTALL)
 
 
 class _Unset:
