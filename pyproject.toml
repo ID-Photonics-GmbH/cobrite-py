@@ -64,6 +64,7 @@ dev = [
     "zensical>=0.0.37",
     "pytest>=8.0",
     "pytest-cov>=6.0",
+    "pyvisa-py>=0.8.1",
 ]
 
 [project.scripts]

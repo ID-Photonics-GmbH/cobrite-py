@@ -26,6 +26,28 @@ Run in order by `devtools/lint.py`:
 3. **ruff format** — format
 4. **basedpyright** — type-check `src/` and `devtools/`
 
+## Integration tests
+
+`tests/test_integration.py` exercises the driver against a real CoBrite unit (all
+tests are read-only and do not modify laser state). They're skipped by default and
+only run when a device address is supplied:
+
+```bash
+uv run pytest tests/test_integration.py --cobrite-address 192.168.1.99
+# or
+COBRITE_ADDRESS=192.168.1.99 uv run pytest tests/test_integration.py
+```
+
+These tests use the real PyVISA transport (`open()` without an injected
+`_transport`), which needs a VISA backend to open a `TCPIP::<ip>::2000::SOCKET`
+resource. `pyvisa-py` is included in the `dev` dependency group for this purpose,
+so `uv sync --dev` (or the default `install` task) is sufficient — no NI-VISA
+runtime install is required.
+
+Coverage failures are expected when running only `test_integration.py` in
+isolation (the 80% gate is calibrated for the full unit-test suite); pass
+`--no-cov` or run alongside `tests/test_unit.py` to avoid the spurious failure.
+
 ## Notes
 
 - `clean` does not remove `uv.lock` — run `uv sync --upgrade` to update it.

@@ -4,7 +4,7 @@ import warnings
 from unittest.mock import patch
 
 import pytest
-from conftest import AUTH, BUSY_1x1x1, BUSY_1x1x3, OPEN_1x1x1, OPEN_1x1x3, make_cb
+from conftest import AUTH, BUSY_1x1x1, BUSY_1x1x3, OPEN_1x1x1, OPEN_1x1x3, OPEN_MX, make_cb
 
 from cobrite import CoBrite, CoBriteError, ScpiStatus
 from cobrite._testing import FakeTransport
@@ -189,6 +189,27 @@ def test_layout_multi_port() -> None:
     cb.close(disable=False)
 
 
+def test_layout_mx_system() -> None:
+    cb = make_cb(OPEN_MX)
+    assert cb._layout == {
+        1: {
+            1: {1: "NC", 2: "NC", 3: "NC", 4: "NC"},
+            2: {},
+            3: {1: "NC", 2: "NC", 3: "NC", 4: "NC"},
+            4: {1: "NC", 2: "NC", 3: "NC", 4: "NC"},
+            5: {},
+            6: {1: "NC"},
+            7: {},
+            8: {1: "NC", 2: "NC"},
+            9: {},
+            10: {1: "NC", 2: "NC"},
+            11: {},
+            12: {},
+        }
+    }
+    cb.close(disable=False)
+
+
 def test_format_layout() -> None:
     cb = make_cb(OPEN_1x1x1)
     s = cb.format_layout()
@@ -266,8 +287,8 @@ def test_device_count_reloads_when_layout_none() -> None:
 
 
 def test_parse_layout_response_too_few_fields() -> None:
-    with pytest.raises(ValueError, match="expected ≥4"):
-        _parse_layout_response("only,three,fields")
+    with pytest.raises(ValueError, match="expected 3 or 4"):
+        _parse_layout_response("only,two")
 
 
 def test_parse_layout_response_non_integer_chassis() -> None:
@@ -278,6 +299,36 @@ def test_parse_layout_response_non_integer_chassis() -> None:
 def test_parse_layout_response_bad_device_count() -> None:
     with pytest.raises(ValueError, match="cannot parse device count"):
         _parse_layout_response("X,1,1,DEVbad")
+
+
+def test_parse_layout_response_mx_header_only() -> None:
+    assert _parse_layout_response("SYSTEM CBMA48SL,EMP,EMP,EMP") == {}
+
+
+def test_parse_layout_response_mx_full() -> None:
+    resp = (
+        "SYSTEM CBMA48SL,EMP,EMP,EMP\n"
+        "1,1,TLS4\n"
+        "1,2,EMP\n"
+        "1,3,TLS4\n"
+        "1,4,TLS4\n"
+        "1,5,EMP\n"
+        "1,6,TLS1\n"
+        "1,7,EMP\n"
+        "1,8,TLS2\n"
+        "1,9,EMP\n"
+        "1,10,TLS2\n"
+        "1,11,EMP\n"
+        "1,12,EMP"
+    )
+    assert _parse_layout_response(resp) == {
+        1: {1: 4, 2: 0, 3: 4, 4: 4, 5: 0, 6: 1, 7: 0, 8: 2, 9: 0, 10: 2, 11: 0, 12: 0}
+    }
+
+
+def test_parse_layout_response_mx_non_integer_chassis() -> None:
+    with pytest.raises(ValueError, match="non-integer chassis/slot"):
+        _parse_layout_response("X,1,TLS4")
 
 
 def test_layout_raises_cobrite_error_on_bad_response() -> None:

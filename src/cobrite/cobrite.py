@@ -230,30 +230,57 @@ def _unpack_config(
 def _parse_layout_response(resp: str) -> dict[int, dict[int, int]]:
     """Parse a raw ``LAY?`` response into ``{chassis: {slot: device_count}}``.
 
+    Two response shapes are supported:
+
+    - DX/DX2: one or more 4-field lines ``LAY,<chassis>,<slot>,DEV<n>``, where
+      ``DEV<n>`` encodes how many devices occupy that slot.
+    - MX: an optional ``SYSTEM <chassis-type>,...`` header line (skipped), followed
+      by 3-field lines ``<chassis>,<slot>,<type-or-EMP>`` — ``EMP`` means 0
+      devices; otherwise the module type's trailing digit gives the device
+      count (e.g. ``TLS4`` holds 4 devices, ``TLS2`` holds 2, ``TLS1`` holds 1).
+
     Raises `ValueError` with a descriptive message on malformed lines so the
     caller can convert it to a `CoBriteError` with context.
     """
     layout: dict[int, dict[int, int]] = {}
     for lineno, line in enumerate(resp.splitlines(), start=1):
+        line = line.strip()
+        if not line:
+            continue
         parts = line.split(",")
-        if len(parts) < 4:
-            raise ValueError(
-                f"LAY? line {lineno}: expected ≥4 comma-separated fields, got {len(parts)}: {line!r}"
-            )
-        try:
-            chassis_nr = int(parts[1])
-            slot_nr = int(parts[2])
-        except ValueError as exc:
-            raise ValueError(f"LAY? line {lineno}: non-integer chassis/slot in {line!r}") from exc
-        device_desc = parts[3].strip()
-        dc = 0
-        if len(device_desc) > 3:
+        if parts[0].strip().upper().startswith("SYSTEM"):
+            continue
+        if len(parts) == 3:
             try:
-                dc = int(device_desc[3:])
+                chassis_nr = int(parts[0])
+                slot_nr = int(parts[1])
             except ValueError as exc:
-                raise ValueError(
-                    f"LAY? line {lineno}: cannot parse device count from {device_desc!r}"
-                ) from exc
+                raise ValueError(f"LAY? line {lineno}: non-integer chassis/slot in {line!r}") from exc
+            device_desc = parts[2].strip()
+            if device_desc.upper() == "EMP":
+                dc = 0
+            else:
+                match = re.search(r"(\d+)$", device_desc)
+                dc = int(match.group(1)) if match else 1
+        elif len(parts) == 4:
+            try:
+                chassis_nr = int(parts[1])
+                slot_nr = int(parts[2])
+            except ValueError as exc:
+                raise ValueError(f"LAY? line {lineno}: non-integer chassis/slot in {line!r}") from exc
+            device_desc = parts[3].strip()
+            dc = 0
+            if len(device_desc) > 3:
+                try:
+                    dc = int(device_desc[3:])
+                except ValueError as exc:
+                    raise ValueError(
+                        f"LAY? line {lineno}: cannot parse device count from {device_desc!r}"
+                    ) from exc
+        else:
+            raise ValueError(
+                f"LAY? line {lineno}: expected 3 or 4 comma-separated fields, got {len(parts)}: {line!r}"
+            )
         layout.setdefault(chassis_nr, {})[slot_nr] = dc
     return layout
 
