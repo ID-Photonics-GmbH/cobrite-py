@@ -4,11 +4,11 @@ import warnings
 from unittest.mock import patch
 
 import pytest
-from conftest import AUTH, BUSY_1x1x1, BUSY_1x1x3, OPEN_1x1x1, OPEN_1x1x3, make_cb
+from conftest import AUTH, BUSY_1x1x1, BUSY_1x1x3, OPEN_1x1x1, OPEN_1x1x3, OPEN_MX, make_cb
 
-from cobrite import CoBrite, CoBriteError
+from cobrite import CoBrite, CoBriteError, ScpiStatus
 from cobrite._testing import FakeTransport
-from cobrite.cobrite import _parse_layout_response, _split_n
+from cobrite.cobrite import _UNSET, _parse_layout_response, _split_n
 
 # ── connection / connect_guard ───────────────────────────────────────────
 
@@ -62,14 +62,25 @@ def test_context_manager() -> None:
 
 def test_query_raises_on_err_response() -> None:
     cb = make_cb({**OPEN_1x1x1, "*IDN?": "ERR 100, unknown command"})
-    with pytest.raises(CoBriteError, match="unknown command"):
+    with pytest.raises(CoBriteError, match="unknown command") as exc_info:
         cb.query("*IDN?")
+    assert exc_info.value.code is ScpiStatus.COMMAND_ERROR
     cb.close(disable=False)
 
-def test_error_not_matched() -> None:
-    cb = make_cb({**OPEN_1x1x1, "*IDN?": "ERR 95, unknown command"})
-    with pytest.raises(CoBriteError, match="unknown command"):
+@pytest.mark.parametrize("status", list(ScpiStatus))
+def test_query_raises_typed_error_for_all_scpi_status_codes(status: ScpiStatus) -> None:
+    cb = make_cb({**OPEN_1x1x1, "*IDN?": f"ERR {status.value}, status detail"})
+    with pytest.raises(CoBriteError, match="status detail") as exc_info:
         cb.query("*IDN?")
+    assert exc_info.value.code is status
+    assert exc_info.value.detail == "status detail"
+    cb.close(disable=False)
+
+def test_query_raises_error_for_unknown_status_code() -> None:
+    cb = make_cb({**OPEN_1x1x1, "*IDN?": "ERR 95, unknown command"})
+    with pytest.raises(CoBriteError, match="unknown command") as exc_info:
+        cb.query("*IDN?")
+    assert exc_info.value.code == 95
     cb.close(disable=False)
 
 
@@ -85,6 +96,14 @@ def test_connect_guard_returns_value_when_exception_false() -> None:
 def test_split_n_raises_on_wrong_count() -> None:
     with pytest.raises(ValueError, match="Expected 3"):
         _split_n("a,b", ",", 3)
+
+
+def test_unset_repr() -> None:
+    assert repr(_UNSET) == "<UNSET>"
+
+
+def test_unset_is_falsey() -> None:
+    assert not _UNSET
 
 
 def test_retry_bare_decorator_retries_on_failure() -> None:
@@ -170,12 +189,43 @@ def test_layout_multi_port() -> None:
     cb.close(disable=False)
 
 
+def test_layout_mx_system() -> None:
+    cb = make_cb(OPEN_MX)
+    assert cb._layout == {
+        1: {
+            1: {1: "NC", 2: "NC", 3: "NC", 4: "NC"},
+            2: {},
+            3: {1: "NC", 2: "NC", 3: "NC", 4: "NC"},
+            4: {1: "NC", 2: "NC", 3: "NC", 4: "NC"},
+            5: {},
+            6: {1: "NC"},
+            7: {},
+            8: {1: "NC", 2: "NC"},
+            9: {},
+            10: {1: "NC", 2: "NC"},
+            11: {},
+            12: {},
+        }
+    }
+    cb.close(disable=False)
+
+
 def test_format_layout() -> None:
     cb = make_cb(OPEN_1x1x1)
     s = cb.format_layout()
     assert "Chassis 1" in s
     assert "Slot 1" in s
     assert "Device 1: GC" in s
+    cb.close(disable=False)
+
+def test_get_laser_type() -> None:
+    cb = make_cb(OPEN_1x1x1)
+    assert cb.get_laser_type(1, 1, 1) == "GC"
+    cb.close(disable=False)
+
+def test_laser_port_laser_type() -> None:
+    cb = make_cb(OPEN_1x1x1)
+    assert cb.port(1, 1, 1).laser_type == "GC"
     cb.close(disable=False)
 
 def test_chassis_count() -> None:
@@ -211,6 +261,12 @@ def test_full_info_reloads_when_layout_none() -> None:
     assert "CoBrite" in s
     cb.close(disable=False)
 
+def test_get_laser_type_reloads_when_layout_none() -> None:
+    cb = make_cb(OPEN_1x1x1)
+    cb._layout = None  # type: ignore[assignment]
+    assert cb.get_laser_type(1, 1, 1) == "GC"
+    cb.close(disable=False)
+
 def test_chassis_count_reloads_when_layout_none() -> None:
     cb = make_cb(OPEN_1x1x1)
     cb._layout = None  # type: ignore[assignment]
@@ -231,8 +287,8 @@ def test_device_count_reloads_when_layout_none() -> None:
 
 
 def test_parse_layout_response_too_few_fields() -> None:
-    with pytest.raises(ValueError, match="expected ≥4"):
-        _parse_layout_response("only,three,fields")
+    with pytest.raises(ValueError, match="expected 3 or 4"):
+        _parse_layout_response("only,two")
 
 
 def test_parse_layout_response_non_integer_chassis() -> None:
@@ -243,6 +299,36 @@ def test_parse_layout_response_non_integer_chassis() -> None:
 def test_parse_layout_response_bad_device_count() -> None:
     with pytest.raises(ValueError, match="cannot parse device count"):
         _parse_layout_response("X,1,1,DEVbad")
+
+
+def test_parse_layout_response_mx_header_only() -> None:
+    assert _parse_layout_response("SYSTEM CBMA48SL,EMP,EMP,EMP") == {}
+
+
+def test_parse_layout_response_mx_full() -> None:
+    resp = (
+        "SYSTEM CBMA48SL,EMP,EMP,EMP\n"
+        "1,1,TLS4\n"
+        "1,2,EMP\n"
+        "1,3,TLS4\n"
+        "1,4,TLS4\n"
+        "1,5,EMP\n"
+        "1,6,TLS1\n"
+        "1,7,EMP\n"
+        "1,8,TLS2\n"
+        "1,9,EMP\n"
+        "1,10,TLS2\n"
+        "1,11,EMP\n"
+        "1,12,EMP"
+    )
+    assert _parse_layout_response(resp) == {
+        1: {1: 4, 2: 0, 3: 4, 4: 4, 5: 0, 6: 1, 7: 0, 8: 2, 9: 0, 10: 2, 11: 0, 12: 0}
+    }
+
+
+def test_parse_layout_response_mx_non_integer_chassis() -> None:
+    with pytest.raises(ValueError, match="non-integer chassis/slot"):
+        _parse_layout_response("X,1,TLS4")
 
 
 def test_layout_raises_cobrite_error_on_bad_response() -> None:

@@ -16,8 +16,7 @@ from typing import Any, Protocol, TypeVar, cast, overload
 
 if sys.version_info >= (3, 12):
     from typing import override  # pragma: no cover
-else:
-
+else:  # pragma: no cover
     def override(f: Any) -> Any:  # noqa: E302
         return f
 
@@ -32,9 +31,10 @@ class ScpiStatus(enum.IntEnum):
     COMMAND_ERROR_POWER_DOWN = 104
     EXEC_ERROR_UNAUTHORIZED = 201
     EXEC_ERROR_COMMLOCK = 204
+    ERROR_PARSE_FAILURE = -1
 
 
-_ERR_RE = re.compile(r"^ERR\s*(\d+),\s*(.*)", re.DOTALL)
+_ERR_RE = re.compile(r"^ERR\s*(-?\d+),\s*(.*)", re.DOTALL)
 
 
 class _Unset:
@@ -230,30 +230,57 @@ def _unpack_config(
 def _parse_layout_response(resp: str) -> dict[int, dict[int, int]]:
     """Parse a raw ``LAY?`` response into ``{chassis: {slot: device_count}}``.
 
+    Two response shapes are supported:
+
+    - DX/DX2: one or more 4-field lines ``LAY,<chassis>,<slot>,DEV<n>``, where
+      ``DEV<n>`` encodes how many devices occupy that slot.
+    - MX: an optional ``SYSTEM <chassis-type>,...`` header line (skipped), followed
+      by 3-field lines ``<chassis>,<slot>,<type-or-EMP>`` — ``EMP`` means 0
+      devices; otherwise the module type's trailing digit gives the device
+      count (e.g. ``TLS4`` holds 4 devices, ``TLS2`` holds 2, ``TLS1`` holds 1).
+
     Raises `ValueError` with a descriptive message on malformed lines so the
     caller can convert it to a `CoBriteError` with context.
     """
     layout: dict[int, dict[int, int]] = {}
     for lineno, line in enumerate(resp.splitlines(), start=1):
+        line = line.strip()
+        if not line:
+            continue
         parts = line.split(",")
-        if len(parts) < 4:
-            raise ValueError(
-                f"LAY? line {lineno}: expected ≥4 comma-separated fields, got {len(parts)}: {line!r}"
-            )
-        try:
-            chassis_nr = int(parts[1])
-            slot_nr = int(parts[2])
-        except ValueError as exc:
-            raise ValueError(f"LAY? line {lineno}: non-integer chassis/slot in {line!r}") from exc
-        device_desc = parts[3].strip()
-        dc = 0
-        if len(device_desc) > 3:
+        if parts[0].strip().upper().startswith("SYSTEM"):
+            continue
+        if len(parts) == 3:
             try:
-                dc = int(device_desc[3:])
+                chassis_nr = int(parts[0])
+                slot_nr = int(parts[1])
             except ValueError as exc:
-                raise ValueError(
-                    f"LAY? line {lineno}: cannot parse device count from {device_desc!r}"
-                ) from exc
+                raise ValueError(f"LAY? line {lineno}: non-integer chassis/slot in {line!r}") from exc
+            device_desc = parts[2].strip()
+            if device_desc.upper() == "EMP":
+                dc = 0
+            else:
+                match = re.search(r"(\d+)$", device_desc)
+                dc = int(match.group(1)) if match else 1
+        elif len(parts) == 4:
+            try:
+                chassis_nr = int(parts[1])
+                slot_nr = int(parts[2])
+            except ValueError as exc:
+                raise ValueError(f"LAY? line {lineno}: non-integer chassis/slot in {line!r}") from exc
+            device_desc = parts[3].strip()
+            dc = 0
+            if len(device_desc) > 3:
+                try:
+                    dc = int(device_desc[3:])
+                except ValueError as exc:
+                    raise ValueError(
+                        f"LAY? line {lineno}: cannot parse device count from {device_desc!r}"
+                    ) from exc
+        else:
+            raise ValueError(
+                f"LAY? line {lineno}: expected 3 or 4 comma-separated fields, got {len(parts)}: {line!r}"
+            )
         layout.setdefault(chassis_nr, {})[slot_nr] = dc
     return layout
 
@@ -398,11 +425,23 @@ class LaserPort:
     def __exit__(self, *_: object) -> None:
         pass
 
+    @property
+    def laser_type(self) -> str:
+        """Laser device type string from the layout, e.g. `"GC"`.
+
+        CSD equivalent: [`get_laser_type`][cobrite.CoBrite.get_laser_type].
+        """
+        return self._cb.get_laser_type(self.chassis, self.slot, self.device)
+
     # --- tuning parameters ---
 
     @property
     def wavelength(self) -> float:
-        """Target wavelength in nm."""
+        """Target wavelength in nm.
+
+        CSD equivalents: [`get_wavelength`][cobrite.CoBrite.get_wavelength] /
+        [`set_wavelength`][cobrite.CoBrite.set_wavelength].
+        """
         return self._cb.get_wavelength(self.chassis, self.slot, self.device)[0][-1]
 
     @wavelength.setter
@@ -411,12 +450,19 @@ class LaserPort:
 
     @property
     def wavelength_limits(self) -> dict[str, float]:
-        """Tunable wavelength range as `{"min": float, "max": float}` in nm."""
+        """Tunable wavelength range as `{"min": float, "max": float}` in nm.
+
+        CSD equivalent: [`get_wavelength_limits`][cobrite.CoBrite.get_wavelength_limits].
+        """
         return self._cb.get_wavelength_limits(self.chassis, self.slot, self.device)[0][-1]
 
     @property
     def frequency(self) -> float:
-        """Target frequency in THz."""
+        """Target frequency in THz.
+
+        CSD equivalents: [`get_frequency`][cobrite.CoBrite.get_frequency] /
+        [`set_frequency`][cobrite.CoBrite.set_frequency].
+        """
         return self._cb.get_frequency(self.chassis, self.slot, self.device)[0][-1]
 
     @frequency.setter
@@ -425,12 +471,20 @@ class LaserPort:
 
     @property
     def frequency_limits(self) -> dict[str, float]:
-        """Tunable frequency range as `{"min": float, "max": float}` in THz."""
+        """Tunable frequency range as `{"min": float, "max": float}` in THz.
+
+        CSD equivalent: [`get_frequency_limits`][cobrite.CoBrite.get_frequency_limits].
+        """
         return self._cb.get_frequency_limits(self.chassis, self.slot, self.device)[0][-1]
 
     @property
     def power(self) -> float:
-        """Target output power in dBm."""
+        """Target output power in dBm.
+
+        CSD equivalents: [`get_power`][cobrite.CoBrite.get_power] /
+        [`set_power`][cobrite.CoBrite.set_power].
+        For the actual measured power use [`actual_power`][cobrite.LaserPort.actual_power].
+        """
         return self._cb.get_power(self.chassis, self.slot, self.device)[0][-1]
 
     @power.setter
@@ -439,17 +493,27 @@ class LaserPort:
 
     @property
     def actual_power(self) -> float:
-        """Actual measured output power in dBm."""
+        """Actual measured output power in dBm.
+
+        CSD equivalent: [`get_actual_power`][cobrite.CoBrite.get_actual_power].
+        """
         return self._cb.get_actual_power(self.chassis, self.slot, self.device)[0][-1]
 
     @property
     def power_limits(self) -> dict[str, float]:
-        """Output power range as `{"min": float, "max": float}` in dBm."""
+        """Output power range as `{"min": float, "max": float}` in dBm.
+
+        CSD equivalent: [`get_power_limits`][cobrite.CoBrite.get_power_limits].
+        """
         return self._cb.get_power_limits(self.chassis, self.slot, self.device)[0][-1]
 
     @property
     def offset(self) -> float:
-        """Frequency offset in GHz."""
+        """Frequency offset in GHz.
+
+        CSD equivalents: [`get_offset`][cobrite.CoBrite.get_offset] /
+        [`set_offset`][cobrite.CoBrite.set_offset].
+        """
         return self._cb.get_offset(self.chassis, self.slot, self.device)[0][-1]
 
     @offset.setter
@@ -458,7 +522,10 @@ class LaserPort:
 
     @property
     def offset_limits(self) -> float:
-        """Symmetric offset limit in GHz.  Allowed range is `[-offset_limits, +offset_limits]`.
+        """Symmetric offset limit in GHz.
+
+        CSD equivalent: [`get_offset_limits`][cobrite.CoBrite.get_offset_limits].
+        The allowed range is `[-offset_limits, +offset_limits]`.
 
         Note: a future release will change the return type to `{"min": float, "max": float}`
         to match all other `*_limits` properties.
@@ -467,14 +534,23 @@ class LaserPort:
 
     @property
     def limits(self) -> dict[str, float]:
-        """All tuning limits.  Keys: `freq_min`, `freq_max` (THz), `offset_range` (GHz), `pow_min`, `pow_max` (dBm)."""
+        """All tuning limits.
+
+        CSD equivalent: [`get_limits`][cobrite.CoBrite.get_limits].
+        Keys: `freq_min`, `freq_max` (THz), `offset_range` (GHz),
+        `pow_min`, `pow_max` (dBm).
+        """
         return self._cb.get_limits(self.chassis, self.slot, self.device)[0][-1]
 
     # --- state / control ---
 
     @property
     def state(self) -> bool:
-        """Laser output enable state."""
+        """Laser output enable state.
+
+        CSD equivalents: [`get_state`][cobrite.CoBrite.get_state] /
+        [`set_state`][cobrite.CoBrite.set_state].
+        """
         return self._cb.get_state(self.chassis, self.slot, self.device)[0][-1]
 
     @state.setter
@@ -484,6 +560,9 @@ class LaserPort:
     @property
     def dither(self) -> bool:
         """Dither enable state.
+
+        CSD equivalents: [`get_dither`][cobrite.CoBrite.get_dither] /
+        [`set_dither`][cobrite.CoBrite.set_dither].
 
         `True` when dither is on (`1`) or when the hardware does not support
         disabling it (`-1` — always-on).  `False` when dither is off (`0`).
@@ -496,12 +575,20 @@ class LaserPort:
 
     @property
     def laser_alarm(self) -> int:
-        """Laser alarm code.  `0` = no alarm."""
+        """Laser alarm code.  `0` = no alarm.
+
+        CSD equivalent: [`get_laser_alarm`][cobrite.CoBrite.get_laser_alarm].
+        """
         return self._cb.get_laser_alarm(self.chassis, self.slot, self.device)[0][-1]
 
     @property
     def laser_config(self) -> dict[str, float | bool | int]:
-        """Full laser configuration.  Keys: `frequency`, `offset`, `power`, `state`, `busy`, `dither`."""
+        """Full laser configuration.
+
+        CSD equivalents: [`get_config`][cobrite.CoBrite.get_config] /
+        [`set_config`][cobrite.CoBrite.set_config].
+        Keys: `frequency`, `offset`, `power`, `state`, `busy`, `dither`.
+        """
         return self._cb.get_config(self.chassis, self.slot, self.device)[0][-1]
 
     @laser_config.setter
@@ -512,14 +599,22 @@ class LaserPort:
 
     @property
     def monitor(self) -> dict[str, float]:
-        """Thermal and current monitor readings.  Keys: `ld_chip_temp`, `base_temp`, `ld_current_ma`, `tec_current_ma`."""
+        """Thermal and current monitor readings.
+
+        CSD equivalent: [`get_monitor`][cobrite.CoBrite.get_monitor].
+        Keys: `ld_chip_temp`, `base_temp`, `ld_current_ma`, `tec_current_ma`.
+        """
         return self._cb.get_monitor(self.chassis, self.slot, self.device)[0][-1]
 
     # --- trigger ---
 
     @property
     def trigger_out_active(self) -> bool:
-        """Whether this port contributes to the hardware trigger output."""
+        """Whether this port contributes to the hardware trigger output.
+
+        CSD equivalents: [`get_trigger_out_active`][cobrite.CoBrite.get_trigger_out_active] /
+        [`set_trigger_out_active`][cobrite.CoBrite.set_trigger_out_active].
+        """
         return self._cb.get_trigger_out_active(self.chassis, self.slot, self.device)[0][-1]
 
     @trigger_out_active.setter
@@ -528,7 +623,13 @@ class LaserPort:
 
     @property
     def trigger_config(self) -> dict[str, float | bool | int]:
-        """Buffered trigger configuration.  Same keys as `laser_config`.  Applied on hardware trigger."""
+        """Buffered trigger configuration.
+
+        CSD equivalents: [`get_trigger_config`][cobrite.CoBrite.get_trigger_config] /
+        [`set_trigger_config`][cobrite.CoBrite.set_trigger_config].
+        Same keys as [`laser_config`][cobrite.LaserPort.laser_config].
+        Applied on hardware trigger.
+        """
         return self._cb.get_trigger_config(self.chassis, self.slot, self.device)[0][-1]
 
     @trigger_config.setter
@@ -1023,6 +1124,23 @@ class CoBrite:
                 for device_nr, device_type in devices.items():
                     lines.append(f"{' ' * indent * 2}Device {device_nr}: {device_type}")
         return "\n".join(lines)
+
+    def get_laser_type(self, chassis: int, slot: int, device: int) -> str:
+        """Return the laser device type string for a CSD address.
+
+        Values come from the cached layout populated by `layout()`, which reads
+        the device's `TYP? C,S,D` response for each discovered port.
+
+        Args:
+            chassis: Chassis number.
+            slot: Slot number.
+            device: Device number.
+
+        Returns:
+            Device type string, e.g. `"GC"`.
+        """
+        self._ensure_layout()
+        return self._layout[chassis][slot][device]
 
     def full_info(self, indent: int = 2) -> str:
         """Return identification, layout, and per-port laser state as a string.
@@ -2708,6 +2826,14 @@ class CoBrite:
     @laser_config.setter
     def laser_config(self, value: dict[str, float | bool | int]) -> None:
         self._require_active_port().laser_config = value
+
+    @property
+    def laser_type(self) -> str:
+        """Laser device type string from the layout, e.g. `"GC"`.
+
+        CSD equivalent: [`get_laser_type`][cobrite.CoBrite.get_laser_type].
+        """
+        return self._require_active_port().laser_type
 
     @property
     def monitor(self) -> dict[str, float]:

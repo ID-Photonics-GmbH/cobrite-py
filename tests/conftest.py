@@ -21,6 +21,42 @@ OPEN_1x1x3 = {
     "INTI": "OK",
 }
 
+OPEN_MX = {
+    "LAY?": (
+        "SYSTEM CBMA48SL,EMP,EMP,EMP\n"
+        "1,1,TLS4\n"
+        "1,2,EMP\n"
+        "1,3,TLS4\n"
+        "1,4,TLS4\n"
+        "1,5,EMP\n"
+        "1,6,TLS1\n"
+        "1,7,EMP\n"
+        "1,8,TLS2\n"
+        "1,9,EMP\n"
+        "1,10,TLS2\n"
+        "1,11,EMP\n"
+        "1,12,EMP"
+    ),
+    "TYP? 1,1,1": "NC",
+    "TYP? 1,1,2": "NC",
+    "TYP? 1,1,3": "NC",
+    "TYP? 1,1,4": "NC",
+    "TYP? 1,3,1": "NC",
+    "TYP? 1,3,2": "NC",
+    "TYP? 1,3,3": "NC",
+    "TYP? 1,3,4": "NC",
+    "TYP? 1,4,1": "NC",
+    "TYP? 1,4,2": "NC",
+    "TYP? 1,4,3": "NC",
+    "TYP? 1,4,4": "NC",
+    "TYP? 1,6,1": "NC",
+    "TYP? 1,8,1": "NC",
+    "TYP? 1,8,2": "NC",
+    "TYP? 1,10,1": "NC",
+    "TYP? 1,10,2": "NC",
+    "INTI": "OK",
+}
+
 BUSY_1x1x1 = {"BUSY? 1,1,1": "0"}
 BUSY_1x1x3 = {"BUSY? 1,1,1": "0", "BUSY? 1,1,2": "0", "BUSY? 1,1,3": "0"}
 
